@@ -402,7 +402,7 @@ export class GameScene {
         if (g?.pickedPoint) this.onGroundMove(g.pickedPoint.x / S, g.pickedPoint.z / S);
       }
       if (info.type === PointerEventTypes.POINTERUP) {
-        if (performance.now() - downAt > 350 || Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return; // that was a camera drag
+        if (performance.now() - downAt > 900 || Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return; // that was a camera drag
         this.skipRequested = true;
         const p = pick();
         const id = p?.pickedMesh?.metadata?.shipId;
