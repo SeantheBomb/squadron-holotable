@@ -60,6 +60,7 @@ export class GameScene {
 
     const hemi = new HemisphericLight('hemi', new Vector3(0, 1, 0), scene); hemi.intensity = 0.55; hemi.groundColor = new Color3(0.1, 0.12, 0.2);
     const sun = new DirectionalLight('sun', new Vector3(-0.5, -0.8, 0.35), scene); sun.intensity = 1.6; sun.diffuse = new Color3(1, 0.96, 0.9);
+    const fill = new DirectionalLight('fill', new Vector3(0.6, 0.35, -0.5), scene); fill.intensity = 0.7; fill.diffuse = new Color3(0.55, 0.7, 1); // PBR pack models have no environment map to lean on
     this.glow = new GlowLayer('glow', scene, { blurKernelSize: 48 }); this.glow.intensity = 0.9;
 
     this.buildSky(); this.buildTable(); this.buildMaterials();
@@ -217,8 +218,9 @@ export class GameScene {
     if (packModel?.model) {
       void this.loadModel(packBase + packModel.model).then(tpl => {
         if (!tpl || !this.ships.has(s.id)) return;
-        const inst = (tpl as any).instantiateHierarchy?.(model) ?? tpl.clone(`glb-${s.id}`, model)!;
+        const inst = tpl.instantiateHierarchy(model, { doNotInstantiate: true })!; // clones, not instances: holo mode swaps materials per ship
         inst.setEnabled(true);
+        for (const m of inst.getChildMeshes()) m.isPickable = true;
         inst.rotation = new Vector3(0, packModel.modelYaw ?? 0, 0);
         inst.scaling.setAll(packModel.modelScale ?? 1);
         placeholder.dispose();
@@ -241,7 +243,9 @@ export class GameScene {
         const { min, max } = (root as any).getHierarchyBoundingVectors(true);
         const size = Math.max(max.x - min.x, max.z - min.z) || 1;
         const holder = new TransformNode('tpl', this.scene);
-        root.parent = holder; root.scaling.scaleInPlace(5 / size);
+        const k = 5 / size;
+        root.parent = holder; root.scaling.scaleInPlace(k);
+        root.position.subtractInPlace(min.add(max).scale(0.5 * k)); // centre the model on its base
         holder.setEnabled(false);
         return holder;
       }).catch(() => null);
