@@ -1,0 +1,21 @@
+{
+  "name": "squadron-holotable",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "npm run dev -w @holotable/client",
+    "dev:server": "npm run dev -w @holotable/server",
+    "build": "npm run build -w @holotable/client",
+    "test": "vitest run",
+    "sim": "tsx packages/bot/src/sim.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

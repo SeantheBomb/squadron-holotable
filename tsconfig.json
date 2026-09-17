@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      "@holotable/rules": ["packages/rules/src/index.ts"],
+      "@holotable/bot": ["packages/bot/src/index.ts"]
+    }
+  },
+  "include": ["packages/rules/src", "packages/rules/test", "packages/bot/src", "packages/client/src"]
+}
