@@ -3,12 +3,138 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Squadron Holotable</title>
-  <link rel="stylesheet" href="/src/style.css" />
+  <title>Squadron Holotable — plan in secret, fly it for real</title>
+  <meta name="description" content="A free, browser-based starfighter dogfight for two. Both players lock in every ship's maneuver in secret, then the round plays out in 3D. Play the AI, hotseat, or online with a room code." />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Squadron Holotable — plan in secret, fly it for real" />
+  <meta property="og:description" content="A free, browser-based starfighter dogfight for two. Lock in every maneuver in secret, then watch the round play out in 3D. No install, no accounts." />
+  <meta property="og:image" content="https://squadron-holotable.sean-feeser.workers.dev/img/og.jpg" />
+  <meta property="og:url" content="https://squadron-holotable.sean-feeser.workers.dev/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="theme-color" content="#040a16" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oxanium:wght@300;400;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" />
+  <link rel="stylesheet" href="/src/home.css" />
 </head>
 <body>
-  <canvas id="scene"></canvas>
-  <div id="ui"></div>
-  <script type="module" src="/src/main.ts"></script>
+  <header class="nav">
+    <div class="wordmark">SQUADRON HOLOTABLE</div>
+    <nav>
+      <a href="#round">How a round works</a>
+      <a href="#first-game">Your first game</a>
+      <a href="#modes">Ways to play</a>
+      <a href="#open">Open source</a>
+      <a class="btn small" href="/play/">Play now</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <picture>
+        <source srcset="/img/hero.webp" type="image/webp" />
+        <img src="/img/hero.jpg" width="1920" height="1080" alt="In-engine capture: a fighter fires on an enemy over a planet while a second enemy explodes behind it" />
+      </picture>
+      <div class="hero-shade"></div>
+      <div class="hero-copy">
+        <div class="eyebrow amber">FREE · RUNS IN YOUR BROWSER · NOTHING TO INSTALL</div>
+        <h1>Plan in secret.<br />Fly it for real.</h1>
+        <p class="lede">A turn-based starfighter dogfight for two players. You and your opponent lock in every ship's maneuver at the same moment, hidden from each other. Then the whole round plays out in 3D, and you find out who guessed right.</p>
+        <div class="cta-row">
+          <a class="btn" href="/play/">Play now</a>
+          <a class="btn ghost" href="#first-game">Learn it in two minutes</a>
+        </div>
+        <p class="sub">Fight the AI, pass one screen back and forth, or send a friend a five-letter room code.</p>
+      </div>
+      <div class="hero-caption">ACTUAL GAMEPLAY · CAPTURED IN-ENGINE</div>
+    </section>
+
+    <section class="band split">
+      <div>
+        <div class="eyebrow">WHAT IT IS</div>
+        <h2>A tabletop dogfight, rebuilt for the screen.</h2>
+      </div>
+      <div class="prose">
+        <p>Squadron Holotable follows the rules of the X-Wing miniatures game (2.5 edition) to the millimetre: real maneuver templates, firing arcs, range bands, red and green dice, and a damage deck. Nothing is simplified, and the computer does all the measuring.</p>
+        <p>It is a game of reading your opponent, not of reflexes. Every ship commits to its move before anyone sees anything. Out-think the other pilot and they fly straight into your guns. Guess wrong and you are the one staring at empty space.</p>
+      </div>
+    </section>
+
+    <section class="band" id="round">
+      <div class="eyebrow">HOW A ROUND WORKS</div>
+      <h2>Four beats, then you plan again.</h2>
+      <div class="round">
+        <figure>
+          <picture>
+            <source srcset="/img/planning.webp" type="image/webp" />
+            <img src="/img/planning.jpg" width="1600" height="900" loading="lazy" alt="The planning holotable: blue friendly ships, red enemies, and a green ghost showing where the selected ship's maneuver will end" />
+          </picture>
+          <figcaption>The holotable during planning. Your ships glow blue, theirs red. The green ghost previews where the selected maneuver ends and what its guns will cover. It never shows you the enemy's plan.</figcaption>
+        </figure>
+        <ol class="beats">
+          <li><span class="num">01</span><div><h3>Plan</h3><p>Give every ship a maneuver: a speed and a direction. Both players plan at once, and nobody sees the other side's dials.</p></div></li>
+          <li><span class="num">02</span><div><h3>Fly</h3><p>Dials flip and ships move one at a time, least skilled pilots first. Aces move last, so they get to react. After moving, a ship takes one action: focus, evade, lock a target, or barrel roll.</p></div></li>
+          <li><span class="num">03</span><div><h3>Fight</h3><p>Now the best pilots shoot first. Red attack dice against green defense dice. Close range helps the shooter; long range and asteroids help the target. The tokens you took earlier fix bad rolls.</p></div></li>
+          <li><span class="num">04</span><div><h3>Reset</h3><p>Tokens clear and you plan again. Destroying a ship scores its point cost. First to 20 points wins, or whoever leads after 12 rounds.</p></div></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="band tinted" id="first-game">
+      <div class="eyebrow">YOUR FIRST GAME</div>
+      <h2>You can be flying in about a minute.</h2>
+      <ol class="steps">
+        <li><span>STEP 1</span><h3>Launch against the AI</h3><p>Press Play now, stay on Versus AI, and keep the squads it suggests. Set the opponent to Rookie for a forgiving first fight.</p></li>
+        <li><span>STEP 2</span><h3>Deploy</h3><p>Click inside the glowing strip on your edge of the table to place each ship. Keep them close enough to help each other.</p></li>
+        <li><span>STEP 3</span><h3>Set your dials</h3><p>Click a ship and choose a maneuver from the dial. Farther from the centre is faster. Hover to see the ghost, then press Lock in maneuvers.</p></li>
+        <li><span>STEP 4</span><h3>Take an action</h3><p>After each of your ships moves, the game offers its actions. Not sure? Take Focus. It helps on attack and on defense.</p></li>
+        <li><span>STEP 5</span><h3>Shoot</h3><p>When an enemy is inside a ship's firing arc, pick the target. The dice roll in the open, and the game offers your Focus or Lock when they would help.</p></li>
+        <li><span>STEP 6</span><h3>Do it again, smarter</h3><p>Every round you know a little more about how your opponent flies. Use it.</p></li>
+      </ol>
+      <div class="cheats">
+        <div>
+          <h3>Reading the dial</h3>
+          <p class="chip"><i class="blue"></i><span><strong>Blue</strong> is easy flying. It clears one stress.</span></p>
+          <p class="chip"><i class="white"></i><span><strong>White</strong> is ordinary. No effect.</span></p>
+          <p class="chip"><i class="red"></i><span><strong>Red</strong> is a hard maneuver, like a flip turn. It causes stress, and a stressed ship cannot take actions or fly red again.</span></p>
+        </div>
+        <div>
+          <h3>Three ways rookies die</h3>
+          <p>Flying off the table. A ship that leaves the play area is gone.</p>
+          <p>Clipping an asteroid. It costs hull, and you cannot shoot while touching one.</p>
+          <p>Forgetting that most ships only shoot forward. Get behind them.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band" id="modes">
+      <div class="eyebrow">WAYS TO PLAY</div>
+      <h2>Alone, side by side, or across the world.</h2>
+      <div class="modes">
+        <article><h3>Versus AI</h3><p>Rookie, Veteran, or Ace, with three flying styles. The AI plans the way you do: it predicts where you will go and never peeks at your dials.</p></article>
+        <article><h3>Hotseat</h3><p>Two players, one screen. The game blanks the table between turns so you can plan in secret and hand over the controls.</p></article>
+        <article><h3>Online</h3><p>Create a room and send the five-letter code. No accounts. The server rolls every die and holds both sets of dials, so nobody can cheat.</p></article>
+      </div>
+    </section>
+
+    <section class="band split ruled" id="open">
+      <div>
+        <div class="eyebrow">FREE AND OPEN SOURCE</div>
+        <h2 class="smaller">No ads, no purchases, no accounts. Ever.</h2>
+        <p class="prose-p">The engine is MIT-licensed and built in the open: rules engine, AI, 3D client and match server. Read it, fork it, or help build the next ships.</p>
+        <p><a class="textlink" href="https://github.com/SeantheBomb/squadron-holotable">View the source on GitHub</a></p>
+      </div>
+      <div class="fine">
+        <h3>A fan project</h3>
+        <p>Squadron Holotable is an unofficial, non-commercial fan project. It is not affiliated with, endorsed, sponsored, or approved by Lucasfilm Ltd., The Walt Disney Company, Atomic Mass Games, Asmodee, or Fantasy Flight Games. All trademarks and copyrights belong to their owners.</p>
+        <p>Ship models are the work of community artists, used under Creative Commons licences. Every model is credited inside the game under Credits &amp; legal.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="closer">
+    <div><div class="closer-title">Your squadron is waiting.</div><p>It loads in a browser tab. Desktop recommended.</p></div>
+    <a class="btn" href="/play/">Play now</a>
+  </footer>
 </body>
 </html>

@@ -48,7 +48,7 @@ export class GameScene {
   private weaponName = '';
 
   constructor(canvas: HTMLCanvasElement) {
-    this.engine = new Engine(canvas, true, { stencil: true, antialias: true });
+    this.engine = new Engine(canvas, true, { stencil: true, antialias: true, preserveDrawingBuffer: location.search.includes('photo=') }); // photo mode reads the canvas back
     const scene = (this.scene = new Scene(this.engine));
     scene.clearColor = new Color4(0.005, 0.008, 0.02, 1);
     const mid = PLAY_AREA * S * 0.5;
@@ -597,7 +597,7 @@ export class GameScene {
   }
 
   private particleTex: Texture | null = null;
-  private sparks(at: Vector3, count: number, color: Color4) {
+  private sparks(at: Vector3, count: number, color: Color4, scale = 1) {
     if (!this.particleTex) {
       const t = new DynamicTexture('spark', 64, this.scene, false); const c = t.getContext() as CanvasRenderingContext2D;
       const g = c.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0)');
@@ -607,22 +607,31 @@ export class GameScene {
     ps.particleTexture = this.particleTex; ps.emitter = at.clone();
     ps.minEmitBox = ps.maxEmitBox = Vector3.Zero();
     ps.color1 = color; ps.color2 = new Color4(1, 1, 1, 1); ps.colorDead = new Color4(color.r * 0.3, color.g * 0.2, 0, 0);
-    ps.minSize = 0.15; ps.maxSize = 0.7; ps.minLifeTime = 0.25; ps.maxLifeTime = 0.9;
-    ps.minEmitPower = 3; ps.maxEmitPower = 14; ps.direction1 = new Vector3(-1, -1, -1); ps.direction2 = new Vector3(1, 1, 1);
+    ps.minSize = 0.15 * scale; ps.maxSize = 0.7 * scale; ps.minLifeTime = 0.25; ps.maxLifeTime = 0.9;
+    ps.minEmitPower = 3 * scale; ps.maxEmitPower = 14 * scale; ps.direction1 = new Vector3(-1, -1, -1); ps.direction2 = new Vector3(1, 1, 1);
     ps.blendMode = ParticleSystem.BLENDMODE_ADD; ps.manualEmitCount = count; ps.targetStopDuration = 1; ps.disposeOnStop = true; ps.gravity = Vector3.Zero();
     ps.start();
   }
 
   private async explode(sv: ShipView) {
     const at = sv.root.position.clone();
-    this.sparks(at, 260, new Color4(1, 0.6, 0.2, 1));
-    const ball = MeshBuilder.CreateSphere('boom', { diameter: 1, segments: 16 }, this.scene); ball.position = at; ball.isPickable = false;
-    const m = new StandardMaterial('boomMat', this.scene); m.emissiveColor = new Color3(1, 0.75, 0.4); m.diffuseColor = Color3.Black(); m.disableLighting = true;
-    ball.material = m;
-    sv.model.setEnabled(false); sv.base.setEnabled(false);
-    await this.tween(700, t => { ball.scaling.setAll(1 + t * 9); m.alpha = 1 - t; m.emissiveColor = Color3.Lerp(new Color3(1, 0.9, 0.7), new Color3(0.8, 0.15, 0.02), t); });
-    this.sparks(at, 120, new Color4(1, 0.3, 0.1, 1));
-    ball.dispose(); m.dispose();
+    this.sparks(at, 320, new Color4(1, 0.6, 0.2, 1), 2.2);
+    const shell = (name: string, color: Color3) => {
+      const b = MeshBuilder.CreateSphere(name, { diameter: 1, segments: 20 }, this.scene); b.position = at; b.isPickable = false;
+      const m = new StandardMaterial(name + 'Mat', this.scene); m.emissiveColor = color; m.diffuseColor = Color3.Black(); m.disableLighting = true; m.backFaceCulling = false;
+      b.material = m; return { b, m };
+    };
+    const core = shell('boomCore', new Color3(1, 0.95, 0.8)), fire = shell('boomFire', new Color3(1, 0.5, 0.12));
+    sv.base.setEnabled(false);
+    await this.tween(760, t => {
+      const e = 1 - Math.pow(1 - t, 3);
+      core.b.scaling.setAll(0.6 + e * 3.2); core.m.alpha = Math.max(0, 1 - t * 1.6);
+      fire.b.scaling.setAll(1 + e * 7); fire.m.alpha = 0.55 * (1 - t) * (1 - t);
+      fire.m.emissiveColor = Color3.Lerp(new Color3(1, 0.6, 0.2), new Color3(0.6, 0.08, 0.02), t);
+      if (t > 0.18) sv.model.setEnabled(false);
+    });
+    this.sparks(at, 140, new Color4(1, 0.3, 0.1, 1), 1.4);
+    for (const s of [core, fire]) { s.b.dispose(); s.m.dispose(); }
   }
 
   reset() {

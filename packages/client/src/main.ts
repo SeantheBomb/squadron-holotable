@@ -33,4 +33,5 @@ function start(l: Launch) {
 
 function menu() { scene.setHolo(true); showMenu(ui, start); }
 
-void loadPack().finally(menu);
+const photo = (import.meta as any).env?.DEV ? new URLSearchParams(location.search).get('photo') : null;
+void loadPack().finally(() => (photo ? import('./photo').then(m => m.runPhoto(scene, photo)) : menu()));

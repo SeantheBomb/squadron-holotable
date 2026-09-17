@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
-import { existsSync, createReadStream, statSync } from 'node:fs';
+import { existsSync, createReadStream, statSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve, join, normalize } from 'node:path';
 
 // In dev, serve a sibling presentation pack (kept in its own repo) at /pack/ when one exists.
@@ -16,6 +16,18 @@ export default defineConfig({
   plugins: [{
     name: 'local-pack',
     configureServer(server) {
+      // Photo mode (src/photo.ts) posts canvas captures here.
+      server.middlewares.use('/__shot', (req, res) => {
+        const name = (new URL(req.url ?? '', 'http://x').searchParams.get('name') ?? 'shot').replace(/[^a-z0-9-]/gi, '');
+        const chunks: Buffer[] = [];
+        req.on('data', c => chunks.push(c));
+        req.on('end', () => {
+          const b64 = Buffer.concat(chunks).toString().replace(/^data:image\/png;base64,/, '');
+          mkdirSync(resolve(__dirname, 'public/img'), { recursive: true });
+          writeFileSync(resolve(__dirname, `public/img/${name}.png`), Buffer.from(b64, 'base64'));
+          res.end('ok');
+        });
+      });
       server.middlewares.use('/pack', (req, res, next) => {
         const file = normalize(join(packDir, decodeURIComponent((req.url ?? '/').split('?')[0])));
         if (!file.startsWith(packDir) || !existsSync(file) || !statSync(file).isFile()) return next();
@@ -25,6 +37,6 @@ export default defineConfig({
       });
     },
   }],
-  build: { target: 'es2022', chunkSizeWarningLimit: 4000 },
+  build: { target: 'es2022', chunkSizeWarningLimit: 4000, rollupOptions: { input: { home: resolve(__dirname, 'index.html'), play: resolve(__dirname, 'play/index.html') } } },
   worker: { format: 'es' },
 });

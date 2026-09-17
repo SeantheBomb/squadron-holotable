@@ -89,7 +89,8 @@ export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
             try { const s = importXws(text); const errs = validateSquad(s); if (errs.length) throw new Error(errs.join(' ')); saveCustom([...loadCustom(), s]); render(); }
             catch (e: any) { alert(e.message); }
           } }, 'Import XWS'),
-          h('button', { onclick: () => showCredits(ui, render) }, 'Credits & legal')),
+          h('button', { onclick: () => showCredits(ui, render) }, 'Credits & legal'),
+          h('button', { onclick: () => (location.href = '/#first-game') }, 'How to play')),
         h('p', { class: 'disclaimer' }, 'Unofficial, non-commercial fan project. Not affiliated with or endorsed by any rights holder. All trademarks belong to their respective owners.'))));
   };
   render();
