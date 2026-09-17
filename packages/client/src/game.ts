@@ -237,7 +237,7 @@ export class Game {
 
     if (!this.iControl(P.player)) return void el.append(h('div', { class: 'waiting' }, `${G.players[P.player].name} is deciding…`));
     const ship = P.shipId ? G.ships[P.shipId] : null;
-    el.append(h('div', { class: 'title' }, P.prompt));
+    el.append(h('div', { class: 'title' }, P.kind === 'attack' && ship ? `${pilotDef(ship).name}: choose an attack` : P.prompt));
     const isMod = P.kind === 'modifyAttack' || P.kind === 'modifyDefense';
     if (isMod) { this.showDice = true; this.renderDice(P.kind === 'modifyAttack' ? 'attack' : 'defense'); }
     const row = h('div', { class: 'options' });
