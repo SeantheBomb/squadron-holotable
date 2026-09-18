@@ -7,7 +7,7 @@ import {
   CONTENT, PLAY_AREA, activeShips, attackOptions, deploymentValid, dialFor, offeredActions,
   pilotDef, previewManeuver, shipDef,
 } from '@holotable/rules';
-import type { DialEntry, GameState, Option, PlayerId, Pose, ShipState } from '@holotable/rules';
+import type { DialEntry, GameEvent, GameState, Option, PlayerId, Pose, ShipState } from '@holotable/rules';
 import type { GameScene } from './scene';
 import { dialWheel, h, shipCard } from './hud';
 import { getTurn, postTurn } from './account';
@@ -40,6 +40,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   // A read marks events seen server-side, so polling would wipe the summary a few seconds after it
   // appeared. Hold on to it until the player actually takes their turn.
   let summary: any[] = [];
+  let replaying = false, skipReplay = false;
 
   // ---------- keeping up to date without being asked ----------
   // Polls while you are waiting, backs off when nothing is happening, and stops entirely when the
@@ -55,24 +56,24 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   function schedule() {
     clearTimeout(pollTimer);
     // Nothing can change while it is your move, so stop asking.
-    if (disposed || paused || document.hidden || !turn || turn.yourTurn) return;
+    if (disposed || paused || replaying || document.hidden || !turn || turn.yourTurn) return;
     pollTimer = setTimeout(() => void tick(), backoff) as unknown as number;
   }
 
   async function tick() {
-    if (disposed || document.hidden) return schedule();
+    if (disposed || replaying || document.hidden) return schedule();
     const before = turn ? signature(turn) : '';
     const wasMine = !!turn?.yourTurn;
     try {
       const next = await getTurn(code);
       if (disposed) return;
       const changed = signature(next) !== before;
-      turn = next;
       if (changed) {
         backoff = FAST; lastChange = Date.now();
-        syncBoard(); render();
         if (!wasMine && next.yourTurn) announce();
+        await replay(next, (next.since ?? []) as GameEvent[]);
       } else {
+        turn = next;
         backoff = Math.min(SLOW, Math.round(backoff * 1.4));
       }
     } catch {
@@ -131,6 +132,58 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       if (!camDone) { camDone = true; void scene.deployCamera(me()); }
     } else scene.showZones(false);
   };
+
+
+  // ---------- watching what happened ----------
+
+  /**
+   * Correspondence would otherwise teleport every ship to its new spot, which makes a round
+   * impossible to follow. The scene already knows how to fly a maneuver, so wind the board back to
+   * where the ships started and play the round through.
+   */
+  function rewind(view: GameState, events: GameEvent[]): GameState {
+    const start = structuredClone(view);
+    const moved = new Set<string>();
+    for (const e of events as any[]) {
+      if (e.t === 'move' && !moved.has(e.shipId)) {
+        moved.add(e.shipId);
+        const s = start.ships[e.shipId];
+        if (s) { s.pose = e.from; s.placed = true; }
+      }
+      // A ship that died this round has to be on the board again for us to watch it die.
+      if ((e.t === 'removed' || e.t === 'destroyed') && start.ships[e.shipId]) {
+        start.ships[e.shipId].removed = false;
+        start.ships[e.shipId].destroyed = false;
+      }
+    }
+    return start;
+  }
+
+  async function replay(next: TurnView, events: GameEvent[]) {
+    // Movement is the obvious one, but an exchange of fire is worth watching too — the engagement
+    // resolves on the actions submission, with no movement in that batch at all.
+    const WATCH = new Set(['move', 'attackResult', 'destroyed', 'obstacle']);
+    const worthWatching = events.some(e => WATCH.has((e as any).t));
+    if (!worthWatching || document.hidden || !next.view) { turn = next; syncBoard(); render(); return; }
+
+    replaying = true; skipReplay = false;
+    turn = next;
+    render();                                   // shows the replay banner and a Skip button
+    scene.showGhost(null);
+    scene.clearOverlay();
+    scene.setHolo(false);                       // out of the planning hologram, into the real thing
+    scene.sync(rewind(next.view, events));
+    void scene.cinematicCamera();
+    try {
+      for (const ev of events) {
+        if (skipReplay) break;
+        await scene.play(ev as any, next.view);
+      }
+    } catch { /* a replay is a courtesy; never let it strand the turn */ }
+    await scene.endAttack();
+    replaying = false;
+    syncBoard(); render();
+  }
 
   // ---------- stage panels ----------
   function deployPanel(): HTMLElement {
@@ -308,7 +361,12 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     try {
       const next = await postTurn(code, { packet });
       deploy = {}; dials = {}; choices = []; selected = null; summary = [];
-      turn = next; sfx.confirm();
+      sfx.confirm();
+      busy = false;
+      await replay(next, (next.since ?? []) as GameEvent[]);
+      backoff = FAST; lastChange = Date.now(); paused = false;
+      schedule();
+      return;
     } catch (e: any) { error = e.message; }
     busy = false;
     backoff = FAST; lastChange = Date.now(); paused = false;
@@ -316,18 +374,34 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   };
 
   // ---------- chrome ----------
+
+  function renderTop(t: TurnView) {
+    els.top.replaceChildren(
+      h('div', { class: 'score' }, h('span', { class: `p${t.you}` }, t.seats[t.you]?.name ?? 'You'),
+        h('span', { class: 'vs' }, ' vs '), h('span', { class: `p${1 - t.you}` }, t.seats[1 - t.you]?.name ?? 'waiting…')),
+      h('div', { class: 'phase' }, replaying ? 'Playing back the round'
+        : t.view ? `Round ${Math.max(1, t.view.round)} · ${t.yourTurn ? STAGE_TITLE[t.stage] ?? t.stage : 'their turn'}` : 'Getting ready'),
+      h('div', { class: 'tools' },
+        h('button', { class: 'chip', onclick: () => refresh() }, 'Refresh'),
+        h('button', { class: 'chip', onclick: () => { dispose(); onExit(); } }, 'Back')));
+  }
+
   function render() {
     if (!turn) { els.panel.replaceChildren(h('div', { class: 'waiting' }, 'Loading your turn…')); return; }
     const t = turn;
     document.title = t.yourTurn ? `● Your turn · ${pageTitle}` : pageTitle;
+
+    if (replaying) {
+      els.centre.replaceChildren();
+      els.panel.replaceChildren(
+        h('div', { class: 'title' }, 'Playing back the round'),
+        h('p', { class: 'hint' }, 'Watch where everyone ended up.'),
+        h('button', { class: 'chip', onclick: () => { skipReplay = true; } }, 'Skip to the end'));
+      renderTop(t);
+      return;
+    }
     const them = t.seats[1 - t.you];
-    els.top.replaceChildren(
-      h('div', { class: 'score' }, h('span', { class: `p${t.you}` }, t.seats[t.you]?.name ?? 'You'),
-        h('span', { class: 'vs' }, ' vs '), h('span', { class: `p${1 - t.you}` }, them?.name ?? 'waiting…')),
-      h('div', { class: 'phase' }, t.view ? `Round ${Math.max(1, t.view.round)} · ${t.yourTurn ? STAGE_TITLE[t.stage] ?? t.stage : 'their turn'}` : 'Getting ready'),
-      h('div', { class: 'tools' },
-        h('button', { class: 'chip', onclick: () => refresh() }, 'Refresh'),
-        h('button', { class: 'chip', onclick: () => { dispose(); onExit(); } }, 'Back')));
+    renderTop(t);
 
     if (t.view) {
       els.left.replaceChildren(
@@ -373,9 +447,13 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   }
 
   async function refresh() {
-    try { turn = await getTurn(code); error = ''; lastChange = Date.now(); backoff = FAST; paused = false; }
-    catch (e: any) { error = e.message; }
-    syncBoard(); render(); schedule();
+    if (replaying) return;
+    try {
+      const next = await getTurn(code);
+      error = ''; lastChange = Date.now(); backoff = FAST; paused = false;
+      await replay(next, (next.since ?? []) as GameEvent[]);
+    } catch (e: any) { error = e.message; render(); }
+    schedule();
   }
 
   scene.onShipClick = id => { if (turn?.view?.ships[id]?.owner === me()) { selected = id; render(); } };
