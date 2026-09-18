@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { PRESET_SQUADS, activeShips, applyCommand, createGame, liveShips } from '../src';
-import type { GameState, PlayerId } from '../src';
-import { Bot, DEFAULT_POLICY, answer, stageOf } from '../../bot/src';
+import { PLAY_AREA, PRESET_SQUADS, activeShips, applyCommand, createGame, dialFor, liveShips } from '../src';
+import type { GameState, PlayerId, Pose } from '../src';
+import { Bot, DEFAULT_POLICY, answer, runForward, stageOf } from '../../bot/src';
 import type { TurnPacket } from '../../bot/src';
 
 /**
@@ -114,5 +114,61 @@ describe('correspondence variant', () => {
       expect(sawActionPhase).toBe(true);
     }
     expect(acted / Math.max(1, ships)).toBeGreaterThan(0.5);
+  });
+});
+
+/**
+ * Drives a game the way the server actually does: a player is asked for a stage, submits a packet
+ * stamped with that stage, and the run continues. The earlier tests passed packets with no choices
+ * at all, which is why they never caught the assistant quietly playing the engagement.
+ */
+describe('a packet only speaks for the stage it was submitted for', () => {
+  it('still asks the player to declare attacks after they have submitted their actions', () => {
+    let attacksAsked = 0, actionsAsked = 0, gamesWithCombat = 0;
+    for (let seed = 1; seed <= 10; seed++) {
+      let G: GameState = createGame(
+        [PRESET_SQUADS[seed % 4], PRESET_SQUADS[(seed + 1) % 4]], ['A', 'B'], 700 + seed, { variant: 'correspondence' },
+      ).state;
+      const stored: Record<number, any> = {};
+      const bots = [0, 1].map(i => new Bot(i as PlayerId, { difficulty: 'ace', seed: seed * 17 + i }));
+      let sawAttackPrompt = false, steps = 0;
+
+      while (G.phase !== 'over' && steps++ < 4000) {
+        const res = runForward(G, stored, (st, c) => applyCommand(st, c), seed);
+        G = res.state;
+        if (res.waitingOn === null) break;
+        const p = res.waitingOn;
+        if (res.stage === 'attacks') { attacksAsked++; sawAttackPrompt = true; }
+        if (res.stage === 'actions') actionsAsked++;
+        // The sitting: a packet for this stage only, with no explicit choices — the assistant fills
+        // in within the stage, exactly as it does for a player who left everything on its default.
+        stored[p] = { player: p, stage: res.stage, choices: [], dials: undefined, deploy: undefined, policy: DEFAULT_POLICY };
+        if (res.stage === 'dials') {
+          // Fly like a player would — the assistant closes on the enemy, so the squadrons actually meet.
+          const cmd = bots[p].decide(G);
+          const dials: Record<string, number> = cmd && cmd.type === 'setDials' ? cmd.dials : {};
+          for (const s of activeShips(G).filter(s => s.owner === p)) {
+            if (Number.isInteger(dials[s.id])) continue;
+            const ok = dialFor(s).filter(d => d.allowed);
+            dials[s.id] = ok[Math.floor(ok.length / 2)].index;
+          }
+          stored[p].dials = dials;
+        }
+        if (res.stage === 'deploy') {
+          const deploy: Record<string, Pose> = {};
+          for (const s of Object.values(G.ships).filter(s => s.owner === p && !s.removed)) {
+            const n = Number(s.label) || 1;
+            deploy[s.id] = { x: PLAY_AREA / 2 + (n - 3) * 58, y: p === 0 ? 30 : PLAY_AREA - 30, r: p === 0 ? Math.PI / 2 : -Math.PI / 2 };
+          }
+          stored[p].deploy = deploy;
+        }
+      }
+      if (sawAttackPrompt) gamesWithCombat++;
+    }
+    expect(actionsAsked, 'players were never asked for actions').toBeGreaterThan(0);
+    // The bug: an actions packet has `choices`, so every later attack prompt fell through to the
+    // assistant and the engagement was played without the player ever seeing it.
+    expect(attacksAsked, 'the player was never asked to declare an attack').toBeGreaterThan(0);
+    expect(gamesWithCombat, 'no game ever reached an attack declaration').toBeGreaterThan(2);
   });
 });

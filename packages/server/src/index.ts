@@ -179,7 +179,7 @@ export class Match extends DurableObject<Env> {
         // A packet stays live until its stage is done. Prompts alternate between players inside a
         // stage (deployment and engagement both do), and nobody should be asked twice for one sitting.
         d.packets ??= {};
-        d.packets[String(seat)] = { round: d.game.round, stage: before.stage, packet: { ...(body.packet as TurnPacket), player: seat as PlayerId } };
+        d.packets[String(seat)] = { round: d.game.round, stage: before.stage, packet: { ...(body.packet as TurnPacket), player: seat as PlayerId, stage: before.stage } };
         const res = runForward(d.game, this.livePackets(), (st, c) => applyCommand(st, c), d.seed);
         d.game = res.state;
         // Do NOT mark these seen: the results of your own turn — your movement, the exchange of

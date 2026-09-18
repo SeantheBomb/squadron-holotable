@@ -259,10 +259,13 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       .map(s => ({ s, options: kind === 'action' ? offeredActions(G(), s) : attackOptions(G(), s) }))
       .filter(r => r.options.length);
     if (!rows.length) return h('p', { class: 'hint' }, kind === 'action' ? 'No ship can act this round.' : 'No ship has a target in arc. Submit to hold fire.');
+    for (const { s: ship } of rows) if (!choices.some(c => c.kind === kind && c.shipId === ship.id)) choices.push({ kind, shipId: ship.id, option: 'pass' });
     const chosen = (id: string) => choices.find(c => c.kind === kind && c.shipId === id)?.option;
     const set = (id: string, option: string) => {
+      // 'pass' is a real option on the prompt. Recording it explicitly is what stops the assistant
+      // from deciding you must have wanted something after all.
       choices = choices.filter(c => !(c.kind === kind && c.shipId === id));
-      if (option !== '__skip') choices.push({ kind, shipId: id, option });
+      choices.push({ kind, shipId: id, option });
       sfx.click(); render();
     };
     return h('div', { class: 'choicerows' }, ...rows.map(({ s, options }) => h('div', { class: 'choicerow' },
@@ -273,7 +276,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
           onmouseenter: () => previewOption(s, o), onmouseleave: () => syncBoard(),
           onclick: () => set(s.id, o.id),
         }, label(o, kind))),
-        h('button', { class: chosen(s.id) === undefined ? 'primary' : 'ghostbtn', onclick: () => set(s.id, '__skip') },
+        h('button', { class: chosen(s.id) === 'pass' ? 'primary' : 'ghostbtn', onclick: () => set(s.id, 'pass') },
           kind === 'action' ? 'No action' : 'Hold fire')))));
   }
 
@@ -355,6 +358,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     if (busy || !ready()) return;
     busy = true; error = ''; render();
     const packet: any = { policy: { dice: 'assist', abilities: 'assist' } };
+    packet.stage = turn!.stage;
     if (turn!.stage === 'deploy') packet.deploy = deploy;
     else if (turn!.stage === 'dials') packet.dials = dials;
     else packet.choices = choices;

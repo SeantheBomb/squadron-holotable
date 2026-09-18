@@ -26,6 +26,12 @@ export interface Choice { kind: string; shipId?: string; option: string }
 
 export interface TurnPacket {
   player: PlayerId;
+  /**
+   * The stage this sitting was submitted for. Without it a packet cannot tell "I have no recorded
+   * choice for this ship's action" from "this prompt belongs to a stage I was never shown", and the
+   * assistant would silently play the engagement on the player's behalf.
+   */
+  stage?: Stage;
   /** Setup: ship id → where to place it. Invalid poses fall back to the assistant. */
   deploy?: Record<string, Pose>;
   /** Planning: ship id → dial index. */
@@ -123,9 +129,12 @@ export function answer(
     return { kind: 'command', command: { type: 'choose', player, option: idx } };
   }
 
+  // Only stand in for the player within the stage they actually submitted. A prompt from a later
+  // stage has to go back to them, or they never get to make the decision at all.
+  const covers = (stage: Stage) => packet?.stage === stage;
   switch (P.kind) {
-    case 'action': return packet?.choices ? assist() : { kind: 'ask', stage: 'actions', player };
-    case 'attack': return packet?.choices ? assist() : { kind: 'ask', stage: 'attacks', player };
+    case 'action': return covers('actions') ? assist() : { kind: 'ask', stage: 'actions', player };
+    case 'attack': return covers('attacks') ? assist() : { kind: 'ask', stage: 'attacks', player };
     case 'modifyAttack':
     case 'modifyDefense':
       return policy.dice === 'assist' ? assist() : { kind: 'ask', stage: 'decision', player };
