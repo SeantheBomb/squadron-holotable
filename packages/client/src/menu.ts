@@ -9,6 +9,7 @@ import { sfx } from './audio';
 import * as Acct from './account';
 
 export type Launch =
+  | { mode: 'correspondence'; code: string }
   | { mode: 'bot'; squads: [Squad, Squad]; bot: BotOptions; name: string }
   | { mode: 'hotseat'; squads: [Squad, Squad] }
   | { mode: 'online'; server: string; code: string; name: string; squad: Squad };
@@ -19,7 +20,7 @@ const saveCustom = (s: Squad[]) => { try { localStorage.setItem(CUSTOM_KEY, JSON
 export const allSquads = (): Squad[] => [...(activePack?.squads ?? []), ...PRESET_SQUADS, ...loadCustom()].filter(s => !validateSquad(s).length);
 
 export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
-  let mode: 'bot' | 'hotseat' | 'online' = 'bot';
+  let mode: 'bot' | 'hotseat' | 'online' | 'corr' = 'bot';
   let a = 0, b = 1;
   let difficulty: BotOptions['difficulty'] = 'veteran', personality: BotOptions['personality'] = 'jouster';
   let name = localStorage.getItem('holotable-name') ?? 'Commander';
@@ -60,6 +61,25 @@ export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
         h('label', {}, 'Player 1 squadron', squadSelect(a, i => { a = i; render(); })), squadSummary(sq[a]),
         h('label', {}, 'Player 2 squadron', squadSelect(b, i => { b = i; render(); })), squadSummary(sq[b]),
         h('button', { class: 'primary big', onclick: () => launch({ mode: 'hotseat', squads: [sq[a], sq[b]] }) }, 'Launch'));
+    } else if (mode === 'corr') {
+      if (!Acct.signedIn()) {
+        body.append(
+          h('p', { class: 'hint' }, 'Correspondence games run over days: both sides submit a whole turn at a time, and nobody has to be online at once. It needs an account so your games can find you again.'),
+          h('button', { class: 'primary big', onclick: () => showAccount(ui, render) }, 'Sign in or create an account'));
+      } else {
+        body.append(
+          h('p', { class: 'hint' }, 'A whole turn at a time, at your own pace. Pick your squadron once you are in the room.'),
+          h('div', { class: 'rowgap' },
+            h('button', { class: 'primary', onclick: async () => {
+              status = 'Opening a room…'; render();
+              try { launch({ mode: 'correspondence', code: await Acct.createRoom('correspondence') }); }
+              catch (e: any) { status = e?.message ?? 'Could not reach the match server.'; render(); }
+            } }, 'Start a new game'),
+            h('input', { placeholder: 'ROOM CODE', maxlength: 5, class: 'code', value: code, oninput: (e: Event) => (code = (e.target as HTMLInputElement).value) }),
+            h('button', { onclick: () => (code.trim().length === 5 ? launch({ mode: 'correspondence', code: code.trim().toUpperCase() }) : (status = 'Room codes are 5 characters.', render())) }, 'Join')),
+          h('button', { onclick: () => showGames(ui, render, c => launch({ mode: 'correspondence', code: c })) }, 'My games'),
+          h('p', { class: 'hint' }, status));
+      }
     } else {
       const go = (c: string) => { localStorage.setItem('holotable-server', server); launch({ mode: 'online', server, code: c.toUpperCase(), name, squad: sq[a] }); };
       body.append(
@@ -82,7 +102,7 @@ export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
         accountBar(ui, render),
         h('h1', {}, 'SQUADRON HOLOTABLE'),
         h('p', { class: 'tagline' }, activePack ? `Content pack: ${activePack.name}` : 'Tactical starfighter combat'),
-        h('div', { class: 'tabs' }, tab('bot', 'Versus AI'), tab('hotseat', 'Hotseat'), tab('online', 'Online')),
+        h('div', { class: 'tabs' }, tab('bot', 'Versus AI'), tab('hotseat', 'Hotseat'), tab('online', 'Online'), tab('corr', 'Correspondence')),
         body,
         h('div', { class: 'menu-foot' },
           h('button', { onclick: () => showBuilder(ui, render) }, 'Squad builder'),
@@ -171,7 +191,7 @@ function accountBar(ui: HTMLElement, back: () => void): HTMLElement {
   return h('div', { class: 'acctbar' },
     h('span', {}, 'Signed in as ', h('b', {}, Acct.account!.username)),
     h('div', { class: 'rowgap' },
-      h('button', { class: 'chip', onclick: () => showGames(ui, back) }, 'My games'),
+      h('button', { class: 'chip', onclick: () => showGames(ui, back, c => location.assign(`?corr=${c}`)) }, 'My games'),
       h('button', { class: 'chip', onclick: () => showAccount(ui, back) }, 'Account')));
 }
 

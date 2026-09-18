@@ -2,17 +2,31 @@
 // holds hidden dials. Clients only ever receive redacted views.
 import { DurableObject } from 'cloudflare:workers';
 import { applyCommand, createGame, validateSquad, viewFor } from '@holotable/rules';
+import { runForward } from '@holotable/bot';
+import type { TurnPacket } from '@holotable/bot';
 import type { Command, GameEvent, GameState, PlayerId, Squad } from '@holotable/rules';
 import { deleteAccount, login, logout, register, setEmail, userFor } from './auth';
 import { claimSeat, createMatch, getMatch, listMatches, syncMatch } from './matches';
 
 interface Env { MATCH: DurableObjectNamespace<Match>; holotable: D1Database }
-interface Seat { token: string; name: string; squad: Squad | null; ready: boolean; user?: { id: string; username: string } | null }
-interface Stored { seats: Seat[]; game: GameState | null; code?: string; mode?: 'live' | 'correspondence' }
+interface Seat { token: string; name: string; squad: Squad | null; ready: boolean; user?: { id: string; username: string } | null; seen?: number }
+interface StoredPacket { round: number; stage: string; packet: TurnPacket }
+interface Stored { seats: Seat[]; game: GameState | null; code?: string; mode?: 'live' | 'correspondence'; log?: GameEvent[]; seed?: number; packets?: Record<string, StoredPacket> }
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, authorization', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...CORS } });
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/** Which stage the game is waiting on, and whose input it needs. Mirrors the packet layer. */
+function stageFor(G: GameState): { stage: 'deploy' | 'dials' | 'actions' | 'attacks' | 'decision'; player: PlayerId | null } {
+  const P = G.pending;
+  if (!P) return { stage: 'decision', player: null };
+  if (P.type === 'planning') return { stage: 'dials', player: P.players[0] ?? null };
+  if (P.type === 'placeShip') return { stage: 'deploy', player: P.player };
+  if (P.kind === 'action') return { stage: 'actions', player: P.player };
+  if (P.kind === 'attack') return { stage: 'attacks', player: P.player };
+  return { stage: 'decision', player: P.player };
+}
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -68,6 +82,18 @@ export default {
         return json({ code, mode });
       }
 
+      const turn = path.match(/^\/api\/rooms\/([A-Z0-9]{5})\/turn$/);
+      if (turn) {
+        const user = await userFor(env, req);
+        if (!user) return json({ error: 'Sign in first.' }, 401);
+        const head = new Headers(req.headers);
+        head.set('X-User', JSON.stringify(user));
+        head.set('X-Mode', (await getMatch(env, turn[1]))?.mode ?? 'correspondence');
+        return env.MATCH.get(env.MATCH.idFromName(turn[1])).fetch(
+          new Request(`https://do/turn/${turn[1]}`, { method: req.method, headers: head, body: req.method === 'POST' ? await req.text() : undefined }),
+        );
+      }
+
       const m = path.match(/^\/api\/rooms\/([A-Z0-9]{5})\/ws$/);
       if (m) {
         // The socket carries no headers we control, so identity is passed as a query parameter and
@@ -95,6 +121,8 @@ export class Match extends DurableObject<Env> {
   private async save() { await this.ctx.storage.put('match', this.data); }
 
   async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    if (url.pathname.startsWith('/turn/')) return this.turn(req, url.pathname.split('/')[2] ?? '');
     if (req.headers.get('Upgrade') !== 'websocket') return json({ error: 'expected websocket' }, 426);
     const d = await this.load();
     d.code ??= new URL(req.url).pathname.split('/')[3] ?? '';
@@ -105,6 +133,101 @@ export class Match extends DurableObject<Env> {
     if (raw) pair[1].serializeAttachment({ seat: -1, user: JSON.parse(raw) });
     await this.save();
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+
+  /** Correspondence play: no socket, no waiting. Fetch your turn, submit it, close the tab. */
+  private async turn(req: Request, code: string): Promise<Response> {
+    const d = await this.load();
+    d.code ??= code;
+    d.mode ??= (req.headers.get('X-Mode') as any) ?? 'correspondence';
+    d.seed ??= Math.floor(Math.random() * 1e9);
+    const user = JSON.parse(req.headers.get('X-User') || 'null') as { id: string; username: string } | null;
+    if (!user) return json({ error: 'Sign in first.' }, 401);
+
+    let seat = d.seats.findIndex(s => s.user?.id === user.id);
+    // Opening the room is joining it: take a free seat straight away so both sides see each other.
+    if (seat < 0 && !d.game && d.seats.length < 2) {
+      d.seats.push({ token: `acct:${user.id}`, name: user.username, squad: null, ready: false, user, seen: 0 });
+      seat = d.seats.length - 1;
+      await claimSeat(this.env, code, seat as 0 | 1, user as any);
+      await this.save();
+      await this.index();
+    }
+
+    if (req.method === 'POST') {
+      const body = await req.json<any>().catch(() => ({}));
+      if (seat < 0) return json({ error: d.game ? 'That match has already started.' : 'That match is full.' }, 403);
+      const me = d.seats[seat];
+
+      if (body.squad !== undefined && !d.game) {
+        const errs = validateSquad(body.squad);
+        if (errs.length) return json({ error: errs.join(' ') }, 400);
+        me.squad = body.squad; me.ready = false;
+      }
+      if (body.ready !== undefined && !d.game) {
+        if (!me.squad) return json({ error: 'Choose a squadron first.' }, 400);
+        me.ready = !!body.ready;
+        const ev = this.tryStart();
+        if (ev.length) { d.log = ev; for (const s of d.seats) s.seen = 0; }
+      }
+
+      // ---- a turn packet
+      if (body.packet && d.game) {
+        const before = stageFor(d.game);
+        if (before.player !== null && before.player !== seat) return json({ error: 'It is not your turn.' }, 409);
+        // A packet stays live until its stage is done. Prompts alternate between players inside a
+        // stage (deployment and engagement both do), and nobody should be asked twice for one sitting.
+        d.packets ??= {};
+        d.packets[String(seat)] = { round: d.game.round, stage: before.stage, packet: { ...(body.packet as TurnPacket), player: seat as PlayerId } };
+        const res = runForward(d.game, this.livePackets(), (st, c) => applyCommand(st, c), d.seed);
+        d.game = res.state;
+        // Do NOT mark these seen: the results of your own turn — your movement, the exchange of
+        // fire, who died — are exactly what you want to read when you next open the match.
+        d.log = [...(d.log ?? []), ...res.events].slice(-600);
+      }
+      await this.save();
+      await this.index();
+      return json(this.turnView(seat, user));
+    }
+
+    // A plain read is the player catching up, so everything shown is now seen.
+    const payload = this.turnView(seat, user);
+    if (seat >= 0) d.seats[seat].seen = (d.log ?? []).length;
+    await this.save();
+    return json(payload);
+  }
+
+  /**
+   * Stored packets that still apply. Scoped by round so last round's dials or attack declarations can
+   * never be replayed against this one.
+   */
+  private livePackets(): Record<number, TurnPacket> {
+    const d = this.data!;
+    const out: Record<number, TurnPacket> = {};
+    for (const [seat, entry] of Object.entries(d.packets ?? {})) {
+      if (d.game && entry.round === d.game.round) out[Number(seat)] = entry.packet;
+    }
+    return out;
+  }
+
+  /** Everything a correspondence client needs in one payload. */
+  private turnView(seat: number, user: { id: string; username: string }) {
+    const d = this.data!;
+    const G = d.game;
+    const view = G && seat >= 0 ? viewFor(G, seat as PlayerId) : null;
+    const st = G ? stageFor(G) : { stage: 'deploy' as const, player: null };
+    const seen = seat >= 0 ? (d.seats[seat].seen ?? 0) : (d.log?.length ?? 0);
+    return {
+      you: seat, mode: d.mode ?? 'correspondence', started: !!G,
+      seats: d.seats.map(s => ({ name: s.name, squad: s.squad?.name ?? null, faction: s.squad?.faction ?? null, ready: s.ready, account: !!s.user })),
+      view,
+      stage: st.stage,
+      waitingOn: st.player,
+      yourTurn: seat >= 0 && st.player === seat,
+      since: (d.log ?? []).slice(seen),
+      user,
+    };
   }
 
   private attach(ws: WebSocket): { seat: number; user?: { id: string; username: string } } {
@@ -151,7 +274,7 @@ export class Match extends DurableObject<Env> {
     if (d.game || d.seats.length < 2) return [];
     if (!d.seats.every(s => s.squad && s.ready && !validateSquad(s.squad).length)) return [];
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    const g = createGame([d.seats[0].squad!, d.seats[1].squad!], [d.seats[0].name, d.seats[1].name], seed);
+    const g = createGame([d.seats[0].squad!, d.seats[1].squad!], [d.seats[0].name, d.seats[1].name], seed, d.mode === 'correspondence' ? { variant: 'correspondence' } : {});
     d.game = g.state;
     return g.events;
   }

@@ -1,8 +1,10 @@
 # Correspondence Mode — feasibility and scope
 
 Measurements are from the engine itself (24 bot-vs-bot games, 235 rounds, 5,461 decisions).
-Phases 0 and 3 are built and deployed; the variant engine and packet layer are built and measured.
-The server turn flow and the player-facing correspondence UI are not built yet — see §9.
+**Correspondence is playable end to end.** Phases 0-4 are built and deployed: accounts, match index,
+the batched variant, turn packets, the async server turn flow and the player-facing screen. A full
+game has been played over HTTP at 2.1 submissions per player per round, and a real browser has played
+a match against a scripted opponent from lobby through deployment, dials and actions.
 
 ---
 
@@ -222,9 +224,9 @@ Mitigations, all cheap:
 |---|---|---|
 | **0** | `localStorage` seat tokens + rejoin-by-URL. Fixes live play too. **Done.** | Hours |
 | **1** | Secret claim links + async turns on the **existing** rules. Proves the plumbing end to end. Only playable by the very patient — that is the point, it is a test. | Small |
-| **2** | **The correspondence variant** (§2A). **Engine variant and packet layer done and measured — 3 sittings per round against a naive 10, with the action phase handing over exactly once. Server turn flow and the player-facing UI are still to build.** | **Large** |
+| **2** | **The correspondence variant** (§2A). **Done**: engine variant, turn packets, async server turn flow and the correspondence screen. Measured at 3 sittings per round against a naive 10 (2.1 in practice, since a round with nobody in arc skips the attack stage). | **Large** |
 | **3** | D1 match index + in-site "your turn" dashboard. **Done**, along with accounts (§4). | Medium |
-| **4** | Web Push, then Discord OAuth and DMs. Turn timers on Durable Object alarms. | Medium |
+| **4** | In-match "since your last turn" summary **done**. Web Push and turn timers on Durable Object alarms still to do. | Medium |
 | **5** | Replays, profiles, open challenges. Ratings only if §7 is acceptable. | Medium+ |
 
 Phases 0 and 1 are worth doing even if correspondence is abandoned, since they fix real gaps in the

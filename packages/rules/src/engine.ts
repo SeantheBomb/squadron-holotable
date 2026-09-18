@@ -476,6 +476,18 @@ export function isObstructed(G: GameState, from: { x: number; y: number }, to: {
   return G.obstacles.some(o => segmentCrossesPoly(from, to, o.poly));
 }
 
+/**
+ * What the Action Phase will offer this ship, computed without running the engine. The correspondence
+ * client needs this to show every ship's choices at once; live play gets the same list from the prompt.
+ */
+export function offeredActions(G: GameState, s: ShipState): Option[] {
+  const owed = s.owedAction;
+  if (!owed) return [];
+  if (owed.bumpedEnemy) return legalActions(G, s, { allowed: ['focus', 'calculate'], forceRed: true }).filter(o => shipDef(s).actions.some(a => a.type === o.action));
+  const opts = legalActions(G, s, { allowed: owed.ionized ? ['focus'] : undefined });
+  return owed.ionized ? opts.filter(o => shipDef(s).actions.some(a => a.type === o.action)) : opts;
+}
+
 export function attackOptions(G: GameState, s: ShipState): Option[] {
   if (s.tokens.disarm > 0 || atRange0OfObstacle(G, s)) return [];
   const opts: Option[] = [];

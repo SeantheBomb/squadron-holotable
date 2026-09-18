@@ -82,5 +82,8 @@ export async function createRoom(mode: 'live' | 'correspondence' = 'live'): Prom
   return (await api<{ code: string }>('/api/rooms', { method: 'POST', body: JSON.stringify({ mode }) })).code;
 }
 
+export const getTurn = (code: string) => api<any>(`/api/rooms/${code}/turn`);
+export const postTurn = (code: string, body: unknown) => api<any>(`/api/rooms/${code}/turn`, { method: 'POST', body: JSON.stringify(body) });
+
 /** Sockets carry no headers we control, so the session rides along as a query parameter. */
 export const socketAuth = () => (token ? `?t=${encodeURIComponent(token)}` : '');

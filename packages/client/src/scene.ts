@@ -6,7 +6,7 @@ import {
 } from '@babylonjs/core';
 import '@babylonjs/loaders/glTF';
 import {
-  ARC_HALF_ANGLE, PLAY_AREA, RANGE_BAND, TEMPLATE_WIDTH, buildPath, poseAlong, shipDef,
+  ARC_HALF_ANGLE, BASE_SIZE, PLAY_AREA, RANGE_BAND, TEMPLATE_WIDTH, buildPath, fwd, left, poseAlong, shipDef, v,
 } from '@holotable/rules';
 import type { ArcName, Bearing, GameEvent, GameState, Obstacle, PlayerId, Pose, ShipState } from '@holotable/rules';
 import { PALETTES, buildPlaceholderShip } from './ships';
@@ -339,6 +339,19 @@ export class GameScene {
     for (let band = 0; band < 3; band++) this.sector(pose, c - h, c + h, 20 + band * RANGE_BAND, 20 + (band + 1) * RANGE_BAND - 2, color, 0.2 - band * 0.05);
   }
 
+  /** A drafted deployment: the base outline and nose, drawn until the turn is submitted. */
+  showPlacement(pose: Pose, color: Color3, label: string) {
+    const h = BASE_SIZE.small / 2;
+    const f = fwd(pose.r), l = left(pose.r);
+    const c = v(pose.x, pose.y);
+    const corner = (a: number, b: number) => toV(c.x + f.x * a + l.x * b, c.y + f.y * a + l.y * b, ALT);
+    const pts = [corner(h, h), corner(-h, h), corner(-h, -h), corner(h, -h), corner(h, h)];
+    const box = MeshBuilder.CreateLines(`place-${label}`, { points: pts }, this.scene);
+    box.color = color; box.isPickable = false; this.overlay.push(box);
+    const nose = MeshBuilder.CreateLines(`nose-${label}`, { points: [corner(h, 0), corner(h * 2.2, 0)] }, this.scene);
+    nose.color = color; nose.isPickable = false; this.overlay.push(nose);
+  }
+
   showRangeRings(pose: Pose) {
     for (let band = 1; band <= 3; band++) this.sector(pose, 0, Math.PI * 2, 20 + band * RANGE_BAND - 1.5, 20 + band * RANGE_BAND, new Color3(0.5, 0.8, 1), 0.5);
   }
@@ -467,6 +480,11 @@ export class GameScene {
   }
 
   tacticalCamera() { const mid = PLAY_AREA * S / 2; return this.tweenCamera({ beta: 0.55, radius: 125, target: new Vector3(mid, 0, mid) }, 800); }
+  /** Deployment: look down on your own edge, clear of the controls at the bottom of the screen. */
+  deployCamera(seat: PlayerId) {
+    const size = PLAY_AREA * S, mid = size / 2;
+    return this.tweenCamera({ alpha: seat === 0 ? -Math.PI / 2 : Math.PI / 2, beta: 0.62, radius: 96, target: new Vector3(mid, 0, seat === 0 ? size * 0.3 : size * 0.7) }, 700);
+  }
   cinematicCamera() { const mid = PLAY_AREA * S / 2; return this.tweenCamera({ beta: 1.02, radius: 105, target: new Vector3(mid, 0, mid) }, 800); }
 
   private savedCam: { alpha: number; beta: number; radius: number; target: Vector3 } | null = null;
