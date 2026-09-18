@@ -30,6 +30,8 @@ export class Game {
   private logLines: string[] = [];
   private hoverShip: string | null = null;
   private shownPhase: string | null = null;
+  private busySince = 0;
+  private watchdog = 0;
 
   constructor(private scene: GameScene, private session: Session, private ui: HTMLElement, private onExit: () => void) {
     this.root = h('div', { class: 'game' });
@@ -43,6 +45,8 @@ export class Game {
     scene.onGroundMove = (x, y) => this.groundMove(x, y);
     scene.onGroundClick = (x, y) => this.groundClick(x, y);
     scene.scene.onBeforeRenderObservable.add(() => this.updateLabels());
+    scene.onTrouble = msg => { if (msg) this.toast(msg); };
+    this.startWatchdog();
   }
 
   receive(u: Update) { this.queue.push(u); void this.pump(); }
@@ -56,7 +60,8 @@ export class Game {
     e.prompt = h('div', { class: 'prompt' }); e.dice = h('div', { class: 'dicetray' });
     e.center = h('div', { class: 'center' }); e.banner = h('div', { class: 'banner' });
     e.log = h('div', { class: 'log' }); e.labels = h('div', { class: 'labels' }); e.toast = h('div', { class: 'toast' });
-    this.root.append(e.labels, e.top, e.left, e.right, e.log, e.center, e.dice, e.prompt, e.banner, e.toast);
+    e.floats = h('div', { class: 'floats' }); e.vignette = h('div', { class: 'vignette' });
+    this.root.append(e.vignette, e.labels, e.floats, e.top, e.left, e.right, e.log, e.center, e.dice, e.prompt, e.banner, e.toast);
   }
 
   private toast(msg: string) {
@@ -80,12 +85,87 @@ export class Game {
     this.els.log.scrollTop = this.els.log.scrollHeight;
   }
 
+  // ---------- damage feedback ----------
+
+  /** A damage number that rises off the ship itself, sized by how big the hit was. */
+  private float(shipId: string, text: string, kind: 'shield' | 'hull' | 'crit', amount = 1) {
+    const p = this.scene.screenPos(shipId);
+    if (!p || !p.visible) return;
+    const el = h('div', { class: `float ${kind}${amount >= 3 ? ' huge' : amount >= 2 ? ' big' : ''}` },
+      h('span', {}, text, kind === 'crit' ? h('i', { class: 'tag-crit' }, ' CRIT') : null));
+    el.style.transform = `translate(${p.x}px, ${p.y}px) translate(-50%, -100%)`;
+    this.els.floats.append(el);
+    setTimeout(() => el.remove(), 1700);
+  }
+
+  private flashScreen(kind: 'taken' | 'dealt' | 'shield') {
+    const v = this.els.vignette;
+    v.className = 'vignette';
+    void v.offsetWidth; // restart the animation
+    v.classList.add('show', kind);
+  }
+
+  private pulseCard(shipId: string, kind: 'hit' | 'shielded') {
+    const card = this.root.querySelector(`.card[data-ship="${shipId}"]`);
+    if (card) { card.classList.remove('hit', 'shielded'); void (card as HTMLElement).offsetWidth; card.classList.add(kind); }
+  }
+
+  private async critBanner(name: string, pilot: string) {
+    const b = this.els.banner;
+    b.replaceChildren(h('div', { class: 'crit-banner' }, h('h2', {}, 'CRITICAL HIT'), h('p', {}, pilot ? `${pilot} — ${name}` : name)));
+    b.classList.add('show');
+    await this.scene.wait(950);
+    b.classList.remove('show');
+    b.replaceChildren();
+  }
+
+  // ---------- recovery ----------
+
+  /**
+   * The animation queue must never be able to strand a player. If a batch has been draining for too
+   * long (a stalled render loop, a lost graphics context), snap to the newest state and hand control back.
+   */
+  private startWatchdog() {
+    this.watchdog = setInterval(() => {
+      if (!this.busy || !this.busySince) return;
+      if (Date.now() - this.busySince < 12000) return;
+      this.busySince = 0;
+      this.recover('Animation stalled — snapped to the current state.');
+    }, 2000) as unknown as number;
+  }
+
+  /** Drop any queued animation, adopt the latest known state and re-render the controls. */
+  private recover(why: string) {
+    const last = this.queue.length ? this.queue[this.queue.length - 1] : null;
+    this.queue = [];
+    this.busy = false;
+    if (last) this.view = last.view;
+    if (this.view) { this.scene.clearOverlay(); this.scene.sync(this.view); }
+    this.render();
+    if (why) this.toast(why);
+  }
+
   // ---------- update pump ----------
 
   private async pump() {
     if (this.busy) return;
     this.busy = true;
+    this.busySince = Date.now();
+    try {
+      await this.drain();
+    } catch (e: any) {
+      console.error('animation failed', e);
+      this.recover('');
+      return;
+    }
+    this.busy = false;
+    this.busySince = 0;
+    this.render();
+  }
+
+  private async drain() {
     while (this.queue.length) {
+      this.busySince = Date.now();
       const u = this.queue.shift()!;
       const first = !this.view;
       if (first) { this.view = u.view; this.scene.setViewer(this.session.viewer()); this.scene.sync(u.view); }
@@ -95,8 +175,6 @@ export class Game {
       this.view = u.view;
       this.scene.sync(u.view);
     }
-    this.busy = false;
-    this.render();
   }
 
   private name(id: string, G = this.view): string { const s = G.ships[id]; return s ? `<b class="p${s.owner}">${pilotDef(s).name} (${s.label})</b>` : id; }
@@ -132,8 +210,21 @@ export class Game {
         await this.scene.wait(ev.cause === 'roll' ? 650 : 450);
         break;
       case 'attackResult': this.log(ev.hit ? `&nbsp;&nbsp;<b>Hit!</b> ${ev.hits} hit${ev.hits === 1 ? '' : 's'}, ${ev.crits} crit${ev.crits === 1 ? '' : 's'}` : '&nbsp;&nbsp;Miss.', ev.hit ? 'hit' : ''); break;
-      case 'damage': { const parts = []; if (ev.shields) parts.push(`${ev.shields} shield${ev.shields > 1 ? 's' : ''}`); if (ev.facedown) parts.push(`${ev.facedown} hull`); if (ev.faceup.length) parts.push(`${ev.faceup.length} critical`); this.log(`&nbsp;&nbsp;${this.name(ev.shipId, G)} loses ${parts.join(', ')}`); break; }
-      case 'crit': this.log(`&nbsp;&nbsp;Critical: <i>${ev.name}</i>`, 'warn'); break;
+      case 'damage': {
+        const parts = []; if (ev.shields) parts.push(`${ev.shields} shield${ev.shields > 1 ? 's' : ''}`); if (ev.facedown) parts.push(`${ev.facedown} hull`); if (ev.faceup.length) parts.push(`${ev.faceup.length} critical`);
+        this.log(`&nbsp;&nbsp;${this.name(ev.shipId, G)} loses ${parts.join(', ')}`);
+        const hull = ev.facedown + ev.faceup.length;
+        const mine = G.ships[ev.shipId]?.owner === this.me();
+        if (ev.shields) this.float(ev.shipId, `\u2212${ev.shields} SHIELD`, 'shield', ev.shields);
+        if (hull) this.float(ev.shipId, `\u2212${hull}`, ev.faceup.length ? 'crit' : 'hull', hull);
+        if (hull || ev.shields) this.flashScreen(hull ? (mine ? 'taken' : 'dealt') : 'shield');
+        this.pulseCard(ev.shipId, hull ? 'hit' : 'shielded');
+        break;
+      }
+      case 'crit':
+        this.log(`&nbsp;&nbsp;Critical: <i>${ev.name}</i>`, 'warn');
+        await this.critBanner(ev.name, G.ships[ev.shipId] ? pilotDef(G.ships[ev.shipId]).name : '');
+        break;
       case 'roll': this.log(`&nbsp;&nbsp;${ev.cause} roll: ${ev.die}`); break;
       case 'destroyed': this.log(`${this.name(ev.shipId, G)} is destroyed!`, 'kill'); break;
       case 'removed': if (ev.reason === 'fled') this.log(`${this.name(ev.shipId, G)} flees the battlefield!`, 'kill'); break;
@@ -176,11 +267,12 @@ export class Game {
         btn(`Action cam: ${s.actionCam}`, 'Cinematic attack camera frequency', () => (s.actionCam = s.actionCam === 'off' ? 'sometimes' : s.actionCam === 'sometimes' ? 'always' : 'off')),
         btn(`${s.speed}×`, 'Animation speed', () => (s.speed = s.speed === 1 ? 2 : 1)),
         btn(s.volume > 0 ? 'Sound on' : 'Muted', 'Toggle sound', () => { s.volume = s.volume > 0 ? 0 : 0.6; setVolume(); }, s.volume > 0),
+        h('button', { class: 'chip', title: 'Redraw from the current game state', onclick: () => { this.session.resync?.(); this.recover('Resynced.'); } }, 'Resync'),
         h('button', { class: 'chip', onclick: () => { if (this.view.phase === 'over' || confirm('Leave this battle?')) this.exit(); } }, 'Exit'),
       ));
   }
 
-  private exit() { this.session.dispose(); this.scene.reset(); this.labels.forEach(l => l.remove()); this.onExit(); }
+  private exit() { clearInterval(this.watchdog); this.session.dispose(); this.scene.reset(); this.labels.forEach(l => l.remove()); this.onExit(); }
 
   private renderColumns() {
     const G = this.view, me = this.me();

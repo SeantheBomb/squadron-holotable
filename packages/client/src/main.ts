@@ -1,23 +1,20 @@
 import { GameScene } from './scene';
 import { Game } from './game';
 import { LocalSession, RemoteSession } from './session';
-import { Launch, showMenu } from './menu';
+import { Launch, showLobby, showMenu } from './menu';
 import { loadPack } from './pack';
-import { h } from './hud';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const ui = document.getElementById('ui')!;
 const scene = new GameScene(canvas);
+if ((import.meta as any).env?.DEV) (window as any).__scene = scene; // dev-only handle for profiling
 
 function start(l: Launch) {
   if (l.mode === 'online') {
     const session = new RemoteSession(l.server, l.code, l.name, l.squad);
     let game: Game | null = null;
-    ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card' },
-      h('h2', {}, 'Room ' + l.code), h('p', {}, 'Share this code with your opponent. The battle starts when they join.'),
-      h('div', { class: 'bigcode' }, l.code),
-      h('button', { onclick: () => { session.dispose(); menu(); } }, 'Cancel'))));
     session.onError(msg => { if (!game) { alert(msg); session.dispose(); menu(); } });
+    showLobby(ui, session, l.code, () => { session.dispose(); menu(); });
     session.onUpdate(u => {
       if (game) return;
       game = new Game(scene, session, ui, menu);

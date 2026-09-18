@@ -4,6 +4,8 @@ import type { Command, GameEvent, GameState, PlayerId, Squad } from '@holotable/
 import type { BotOptions } from '@holotable/bot';
 
 export interface Update { view: GameState; events: GameEvent[] }
+export interface LobbySeat { name: string; squad: string | null; faction: string | null; ready: boolean }
+export interface LobbyState { you: PlayerId; seats: LobbySeat[]; started: boolean }
 export type Listener = (u: Update) => void;
 
 export interface Session {
@@ -14,6 +16,8 @@ export interface Session {
   send(cmd: Command): void;
   onUpdate(fn: Listener): void;
   onError(fn: (msg: string) => void): void;
+  /** Ask the transport to re-send authoritative state (online only). */
+  resync?(): void;
   dispose(): void;
 }
 
@@ -82,8 +86,9 @@ export class RemoteSession implements Session {
   private ws: WebSocket;
   private listeners: Listener[] = [];
   private errors: ((m: string) => void)[] = [];
+  private lobbyFns: ((l: LobbyState) => void)[] = [];
   private you: PlayerId = 0;
-  onSeats: (names: string[]) => void = () => {};
+  lobby: LobbyState | null = null;
 
   constructor(serverUrl: string, readonly code: string, name: string, squad: Squad) {
     const tokenKey = `holotable-token-${code}`;
@@ -96,15 +101,22 @@ export class RemoteSession implements Session {
       if (msg.type === 'error') return this.errors.forEach(fn => fn(msg.error));
       if (msg.type === 'state') {
         this.you = msg.you; this.local = [msg.you];
-        this.onSeats(msg.seats);
+        this.lobby = { you: msg.you, seats: msg.seats ?? [], started: !!msg.started };
+        this.lobbyFns.forEach(fn => fn(this.lobby!));
         if (msg.view) this.listeners.forEach(fn => fn({ view: msg.view, events: msg.events ?? [] }));
       }
     };
     this.ws.onclose = () => this.errors.forEach(fn => fn('Disconnected from match server.'));
   }
 
+  onLobby(fn: (l: LobbyState) => void) { this.lobbyFns.push(fn); if (this.lobby) fn(this.lobby); }
+  setSquad(squad: Squad) { this.tell({ type: 'setSquad', squad }); }
+  setReady(ready: boolean) { this.tell({ type: 'ready', ready }); }
+  private tell(m: unknown) { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(m)); }
+
   viewer() { return this.you; }
   send(cmd: Command) { this.ws.send(JSON.stringify({ type: 'cmd', command: cmd })); }
+  resync() { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'resync' })); }
   onUpdate(fn: Listener) { this.listeners.push(fn); }
   onError(fn: (m: string) => void) { this.errors.push(fn); }
   dispose() { this.ws.onclose = null; this.ws.close(); }

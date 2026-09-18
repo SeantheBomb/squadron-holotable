@@ -80,7 +80,7 @@ export function shipCard(G: GameState, s: ShipState, mine: boolean, draftDial: n
   const p = pilotDef(s), d = shipDef(s);
   const hull = s.hull - s.damage.length;
   const dead = s.removed || s.destroyed;
-  const card = h('div', { class: `card ${mine ? 'mine' : 'foe'}${dead ? ' dead' : ''}`, onclick: handlers.click, onmouseenter: handlers.enter, onmouseleave: handlers.leave });
+  const card = h('div', { 'data-ship': s.id, class: `card ${mine ? 'mine' : 'foe'}${dead ? ' dead' : ''}`, onclick: handlers.click, onmouseenter: handlers.enter, onmouseleave: handlers.leave });
   card.append(
     h('div', { class: 'card-head' }, h('span', { class: 'init' }, String(s.initiative)), h('span', { class: 'name' }, p.name), h('span', { class: 'tag' }, s.label)),
     h('div', { class: 'card-sub' }, `${d.name} · ${s.cost} pts${p.caption ? ' · ' + p.caption : ''}`),

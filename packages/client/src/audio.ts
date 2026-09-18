@@ -49,7 +49,15 @@ export const sfx = {
   torpedo: () => { tone('sine', 140, 60, 0.9, 0.2); burst(0.9, 0.08, 1200, 200); },
   ion: () => { tone('square', 300, 1800, 0.35, 0.06); tone('sine', 1800, 200, 0.4, 0.08, 0.1); },
   shield: () => { tone('sine', 1200, 500, 0.3, 0.1); burst(0.25, 0.06, 5000, 1500); },
-  hull: () => { burst(0.3, 0.25, 1800, 200); tone('triangle', 160, 50, 0.3, 0.15); },
+  // Weight 1-3 scales the impact; a crit adds a bright metallic tear over the top.
+  hull: (weight = 1, crit = false) => {
+    const w = Math.max(1, Math.min(3, weight));
+    burst(0.28 + w * 0.09, 0.2 + w * 0.09, 2200, 140);
+    tone('triangle', 180 - w * 18, 42, 0.32 + w * 0.1, 0.13 + w * 0.05);
+    tone('sine', 90, 30, 0.45 + w * 0.12, 0.1 + w * 0.05, 0.02);
+    if (w > 1) burst(0.2, 0.1, 900, 120, 0.06);
+    if (crit) { tone('sawtooth', 2400, 400, 0.4, 0.07, 0.03); burst(0.5, 0.16, 7000, 500, 0.02); tone('square', 220, 110, 0.5, 0.05, 0.08); }
+  },
   explode: () => { burst(1.4, 0.5, 2500, 60); tone('sine', 120, 28, 1.2, 0.4); burst(0.2, 0.3, 8000, 2000); },
   flyby: (speed: number) => burst(0.5 + speed * 0.08, 0.05, 300 + speed * 120, 1400),
   dice: () => { for (let i = 0; i < 4; i++) burst(0.03, 0.12, 5000, 2500, i * 0.05 + Math.random() * 0.02); },

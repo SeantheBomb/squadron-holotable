@@ -19,7 +19,7 @@ const ALT = 2.2;
 const toV = (x: number, y: number, h = 0) => new Vector3(x * S, h, y * S);
 const yaw = (r: number) => Math.PI / 2 - r;
 
-interface ShipView { root: TransformNode; model: TransformNode; base: LinesMesh; owner: PlayerId; faction: string; realMats: Map<Mesh, any>; alt: number }
+interface ShipView { root: TransformNode; model: TransformNode; base: LinesMesh; anchor: Mesh; owner: PlayerId; faction: string; realMats: Map<Mesh, any>; alt: number; smoke?: ParticleSystem }
 
 export class GameScene {
   readonly engine: Engine;
@@ -32,6 +32,7 @@ export class GameScene {
   private ghost: TransformNode | null = null;
   private ghostKey = '';
   private holoMat!: StandardMaterial;
+  private holoTints = new Map<string, StandardMaterial>();
   private ghostMat!: StandardMaterial;
   private grid!: Mesh;
   private zones: Mesh[] = [];
@@ -45,6 +46,7 @@ export class GameScene {
   onGroundMove: (x: number, y: number) => void = () => {};
   onGroundClick: (x: number, y: number) => void = () => {};
   skipRequested = false;
+  onTrouble: (msg: string) => void = () => {};
   private weaponName = '';
 
   constructor(canvas: HTMLCanvasElement) {
@@ -66,6 +68,8 @@ export class GameScene {
     this.buildSky(); this.buildTable(); this.buildMaterials();
     this.sky.visibility = 0.35; this.planet.visibility = 0.25;
     this.wirePointer();
+    this.engine.onContextLostObservable.add(() => this.onTrouble('The graphics context was lost. Recovering…'));
+    this.engine.onContextRestoredObservable.add(() => this.onTrouble(''));
     this.engine.runRenderLoop(() => scene.render());
     window.addEventListener('resize', () => this.engine.resize());
   }
@@ -164,10 +168,13 @@ export class GameScene {
   }
 
   private applyHolo(sv: ShipView) {
-    const tint = this.holoMat.clone('holoTint');
-    const pal = PALETTES[sv.faction] ?? PALETTES.coalition;
-    tint.emissiveColor = sv.owner === this.viewer ? new Color3(0.2, 0.65, 1.0) : new Color3(1.0, 0.35, 0.25);
-    void pal;
+    const key = sv.owner === this.viewer ? 'friend' : 'foe';
+    let tint = this.holoTints.get(key);
+    if (!tint) {
+      tint = this.holoMat.clone(`holoTint-${key}`)!;
+      tint.emissiveColor = key === 'friend' ? new Color3(0.2, 0.65, 1.0) : new Color3(1.0, 0.35, 0.25);
+      this.holoTints.set(key, tint);
+    }
     for (const [mesh, real] of sv.realMats) mesh.material = this.holo ? tint : real;
   }
 
@@ -176,6 +183,7 @@ export class GameScene {
   setViewer(p: PlayerId) {
     if (this.viewer === p && this.ships.size) return;
     this.viewer = p;
+    this.holoTints.clear();
     void this.tweenCamera({ alpha: p === 0 ? -Math.PI / 2 : Math.PI / 2 }, 700);
     for (const sv of this.ships.values()) this.applyHolo(sv);
   }
@@ -186,8 +194,9 @@ export class GameScene {
       let sv = this.ships.get(s.id);
       if (!sv && s.placed && !s.removed) sv = this.createShip(s);
       if (!sv) continue;
-      if (s.removed) { sv.root.dispose(); this.ships.delete(s.id); continue; }
+      if (s.removed) { sv.smoke?.dispose(); sv.root.dispose(); this.ships.delete(s.id); continue; }
       this.place(sv, s.pose);
+      this.updateSmoke(sv, 1 - (s.hull - s.damage.length) / Math.max(1, s.hull));
     }
   }
 
@@ -207,9 +216,9 @@ export class GameScene {
     const base = MeshBuilder.CreateLines(`base-${s.id}`, { points: [new Vector3(-h, 0, -h), new Vector3(h, 0, -h), new Vector3(h, 0, h), new Vector3(-h, 0, h), new Vector3(-h, 0, -h), new Vector3(0, 0, h * 0.6), new Vector3(h, 0, -h)] }, this.scene);
     base.color = s.owner === 0 ? new Color3(1, 0.5, 0.3) : new Color3(0.35, 1, 0.6); base.parent = root; base.isPickable = false;
     const n = Number(s.label) || 1;
-    const sv: ShipView = { root, model, base, owner: s.owner, faction: def.faction, realMats: new Map(), alt: ALT + ((n * 37) % 5) * 0.22 };
-    const hit = MeshBuilder.CreateBox(`hit-${s.id}`, { width: 4.4, height: 3, depth: 4.4 }, this.scene); // generous click target
+    const hit = MeshBuilder.CreateBox(`hit-${s.id}`, { width: 4.4, height: 3, depth: 4.4 }, this.scene); // generous click target, and the emitter anchor for damage smoke
     hit.parent = root; hit.visibility = 0; hit.metadata = { shipId: s.id };
+    const sv: ShipView = { root, model, base, anchor: hit, owner: s.owner, faction: def.faction, realMats: new Map(), alt: ALT + ((n * 37) % 5) * 0.22 };
     this.collectMats(sv, placeholder, s.id);
     this.ships.set(s.id, sv);
     this.applyHolo(sv);
@@ -255,7 +264,7 @@ export class GameScene {
   }
 
   private buildObstacles(obs: Obstacle[]) {
-    this.obstacleNodes.forEach(n => n.dispose()); this.obstacleNodes = [];
+    this.obstacleNodes.forEach(n => n.dispose(false, true)); this.obstacleNodes = [];
     for (const o of obs) {
       const node = new TransformNode(o.id, this.scene);
       const pts = o.poly.map(p => toV(p.x, p.y, 0.04)); pts.push(pts[0]);
@@ -299,7 +308,9 @@ export class GameScene {
 
   // ---------- overlays ----------
 
-  clearOverlay() { this.overlay.forEach(m => m.dispose()); this.overlay = []; }
+  // dispose(doNotRecurse=false, disposeMaterialAndTextures=true): a bare dispose() leaks the material
+  // and its compiled shader, and overlays are rebuilt on every hover and prompt render.
+  clearOverlay() { this.overlay.forEach(m => m.dispose(false, true)); this.overlay = []; }
 
   private sector(centre: Pose, a0: number, a1: number, r0: number, r1: number, color: Color3, alpha: number) {
     const pos: number[] = [], idx: number[] = [];
@@ -415,15 +426,30 @@ export class GameScene {
 
   // ---------- animation ----------
 
+  /**
+   * Animations must never be able to stall the game. The observable only ticks while the render loop
+   * runs, so a hidden tab or a lost WebGL context would otherwise leave this promise pending forever
+   * and freeze the turn. A wall-clock timer always settles it.
+   */
   private tween(ms: number, step: (t: number) => void): Promise<void> {
-    const dur = ms / settings.speed;
+    const dur = Math.max(1, ms / settings.speed);
     return new Promise(resolve => {
       const start = performance.now();
+      let done = false;
+      const finish = (snap: boolean) => {
+        if (done) return;
+        done = true;
+        this.scene.onBeforeRenderObservable.remove(obs);
+        clearTimeout(timer);
+        if (snap) { try { step(1); } catch { /* the target may be disposed */ } }
+        resolve();
+      };
       const obs = this.scene.onBeforeRenderObservable.add(() => {
         const raw = Math.min(1, (performance.now() - start) / dur);
         step(raw);
-        if (raw >= 1) { this.scene.onBeforeRenderObservable.remove(obs); resolve(); }
+        if (raw >= 1) finish(false);
       });
+      const timer = setTimeout(() => finish(true), dur + 250);
     });
   }
   wait(ms: number) { return this.tween(ms, () => {}); }
@@ -485,14 +511,33 @@ export class GameScene {
       }
       case 'damage': {
         const sv = this.ships.get(ev.shipId); if (!sv) return;
-        if (ev.shields > 0) { sfx.shield(); await this.shieldFlash(sv); }
-        if (ev.facedown + ev.faceup.length > 0) { sfx.hull(); this.sparks(sv.root.position, 40, new Color4(1, 0.7, 0.3, 1)); await this.shake(sv); }
+        const hull = ev.facedown + ev.faceup.length;
+        const at = sv.root.position;
+        // Shields first: a contained blue flare that reads as "absorbed".
+        if (ev.shields > 0) {
+          sfx.shield();
+          void this.shockRing(at, new Color3(0.35, 0.75, 1), 5 + ev.shields * 1.2, 420);
+          void this.impactFlash(sv, new Color3(0.35, 0.75, 1), 260);
+          this.sparks(at, 18 * ev.shields, new Color4(0.5, 0.85, 1, 1), 0.7);
+          await this.shieldFlash(sv);
+        }
+        // Hull: heavier, hotter, and the camera feels it. Everything scales with the size of the hit.
+        if (hull > 0) {
+          const crit = ev.faceup.length > 0;
+          const weight = Math.min(3, hull);
+          sfx.hull(weight, crit);
+          void this.shockRing(at, crit ? new Color3(1, 0.95, 0.85) : new Color3(1, 0.55, 0.2), 6 + weight * 2.2, 480);
+          void this.impactFlash(sv, crit ? new Color3(1, 0.9, 0.8) : new Color3(1, 0.35, 0.15), 380);
+          this.sparks(at, 40 + weight * 45, new Color4(1, 0.62, 0.22, 1), 0.9 + weight * 0.35);
+          void this.cameraShake(0.55 + weight * 0.5 + (crit ? 0.7 : 0), 260 + weight * 70);
+          await this.shake(sv, 0.35 + weight * 0.22, 300 + weight * 60);
+        }
         return;
       }
       case 'destroyed': { const sv = this.ships.get(ev.shipId); if (sv) { sfx.explode(); await this.explode(sv); } return; }
       case 'removed': {
         const sv = this.ships.get(ev.shipId);
-        if (sv) { sv.root.dispose(); this.ships.delete(ev.shipId); }
+        if (sv) { sv.smoke?.dispose(); sv.root.dispose(); this.ships.delete(ev.shipId); }
         await this.actionCamOut();
         return;
       }
@@ -590,21 +635,82 @@ export class GameScene {
     bubble.dispose(); m.dispose();
   }
 
-  private async shake(sv: ShipView) {
+  private async shake(sv: ShipView, strength = 0.35, ms = 320) {
     const base = sv.model.position.clone();
-    await this.tween(320, t => { const k = (1 - t) * 0.35; sv.model.position = base.add(new Vector3((Math.random() - 0.5) * k, (Math.random() - 0.5) * k, (Math.random() - 0.5) * k)); });
+    await this.tween(ms, t => { const k = (1 - t) * strength; sv.model.position = base.add(new Vector3((Math.random() - 0.5) * k, (Math.random() - 0.5) * k, (Math.random() - 0.5) * k)); });
     sv.model.position = base;
   }
 
+  /** Per-mesh overlay tint: never touches the material, which pack models share between ships. */
+  private async impactFlash(sv: ShipView, color: Color3, ms: number) {
+    const meshes = sv.model.getChildMeshes(false);
+    for (const m of meshes) { m.overlayColor = color; m.overlayAlpha = 0; m.renderOverlay = true; }
+    await this.tween(ms, t => { const a = Math.sin(Math.PI * t) * 0.8; for (const m of meshes) if (!m.isDisposed()) m.overlayAlpha = a; });
+    for (const m of meshes) if (!m.isDisposed()) m.renderOverlay = false;
+  }
+
+  private async shockRing(at: Vector3, color: Color3, maxScale: number, ms: number) {
+    // Unit torus: `maxScale` is then the ring's final diameter in scene units (a fighter is ~5 across).
+    const ring = MeshBuilder.CreateTorus('shock', { diameter: 1, thickness: 0.038, tessellation: 40 }, this.scene);
+    ring.position = at.clone(); ring.isPickable = false;
+    const m = new StandardMaterial('shockMat', this.scene);
+    m.emissiveColor = color; m.diffuseColor = Color3.Black(); m.disableLighting = true; m.backFaceCulling = false;
+    ring.material = m;
+    await this.tween(ms, t => {
+      const e = 1 - Math.pow(1 - t, 2.4);
+      const d = 1.2 + e * maxScale;
+      ring.scaling.set(d, d * 0.35, d);
+      m.alpha = Math.max(0, 0.9 - e * 1.35);
+    });
+    ring.dispose(false, true);
+  }
+
+  /** A short kick on the camera; the steady planning view is left alone. */
+  async cameraShake(strength: number, ms: number) {
+    if (this.holo) return;
+    const cam = this.camera, base = cam.target.clone();
+    await this.tween(ms, t => {
+      const k = strength * (1 - t) * (1 - t);
+      cam.target = base.add(new Vector3((Math.random() - 0.5) * k, (Math.random() - 0.5) * k * 0.7, (Math.random() - 0.5) * k));
+    });
+    cam.target = base;
+  }
+
+  /** Wounded ships trail smoke and embers, so a hurt ship stays legible between attacks. */
+  private updateSmoke(sv: ShipView, hurt: number) {
+    if (hurt < 0.5) {
+      if (sv.smoke) { sv.smoke.stop(); sv.smoke.dispose(); sv.smoke = undefined; }
+      return;
+    }
+    const heavy = hurt >= 0.8;
+    if (sv.smoke) { sv.smoke.emitRate = heavy ? 46 : 20; return; }
+    const ps = new ParticleSystem(`smoke-${sv.root.name}`, 90, this.scene);
+    ps.particleTexture = this.spark();
+    ps.emitter = sv.anchor;
+    ps.minEmitBox = new Vector3(-0.4, -0.2, -0.8); ps.maxEmitBox = new Vector3(0.4, 0.3, 0.2);
+    ps.color1 = new Color4(1, 0.5, 0.15, 0.85); ps.color2 = new Color4(0.35, 0.35, 0.38, 0.5);
+    ps.colorDead = new Color4(0.12, 0.12, 0.14, 0);
+    ps.minSize = 0.35; ps.maxSize = 1.5; ps.minLifeTime = 0.5; ps.maxLifeTime = 1.4;
+    ps.emitRate = heavy ? 46 : 20; ps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+    ps.direction1 = new Vector3(-0.4, 0.5, -1.4); ps.direction2 = new Vector3(0.4, 1.2, -0.4);
+    ps.minEmitPower = 0.6; ps.maxEmitPower = 2.2; ps.gravity = Vector3.Zero();
+    ps.start();
+    sv.smoke = ps;
+  }
+
   private particleTex: Texture | null = null;
-  private sparks(at: Vector3, count: number, color: Color4, scale = 1) {
+  private spark(): Texture {
     if (!this.particleTex) {
       const t = new DynamicTexture('spark', 64, this.scene, false); const c = t.getContext() as CanvasRenderingContext2D;
       const g = c.createRadialGradient(32, 32, 0, 32, 32, 32); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(1, 'rgba(255,255,255,0)');
       c.fillStyle = g; c.fillRect(0, 0, 64, 64); t.update(); this.particleTex = t;
     }
+    return this.particleTex;
+  }
+
+  private sparks(at: Vector3, count: number, color: Color4, scale = 1) {
     const ps = new ParticleSystem('sparks', count, this.scene);
-    ps.particleTexture = this.particleTex; ps.emitter = at.clone();
+    ps.particleTexture = this.spark(); ps.emitter = at.clone();
     ps.minEmitBox = ps.maxEmitBox = Vector3.Zero();
     ps.color1 = color; ps.color2 = new Color4(1, 1, 1, 1); ps.colorDead = new Color4(color.r * 0.3, color.g * 0.2, 0, 0);
     ps.minSize = 0.15 * scale; ps.maxSize = 0.7 * scale; ps.minLifeTime = 0.25; ps.maxLifeTime = 0.9;
@@ -635,7 +741,7 @@ export class GameScene {
   }
 
   reset() {
-    for (const sv of this.ships.values()) sv.root.dispose();
+    for (const sv of this.ships.values()) { sv.smoke?.dispose(); sv.root.dispose(); }
     this.ships.clear(); this.obstacleNodes.forEach(n => n.dispose()); this.obstacleNodes = []; this.clearOverlay(); this.showGhost(null); this.savedCam = null;
   }
 }

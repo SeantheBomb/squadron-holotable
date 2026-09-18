@@ -2,6 +2,7 @@
 import { CONTENT, PRESET_SQUADS, SQUAD_LIMIT, squadCost, validateSquad } from '@holotable/rules';
 import type { Squad } from '@holotable/rules';
 import type { BotOptions } from '@holotable/bot';
+import type { LobbyState, RemoteSession } from './session';
 import { h } from './hud';
 import { activePack, importXws } from './pack';
 import { sfx } from './audio';
@@ -14,7 +15,7 @@ export type Launch =
 const CUSTOM_KEY = 'holotable-squads';
 const loadCustom = (): Squad[] => { try { return JSON.parse(localStorage.getItem(CUSTOM_KEY) ?? '[]'); } catch { return []; } };
 const saveCustom = (s: Squad[]) => { try { localStorage.setItem(CUSTOM_KEY, JSON.stringify(s)); } catch { /* ignore */ } };
-const allSquads = (): Squad[] => [...(activePack?.squads ?? []), ...PRESET_SQUADS, ...loadCustom()].filter(s => !validateSquad(s).length);
+export const allSquads = (): Squad[] => [...(activePack?.squads ?? []), ...PRESET_SQUADS, ...loadCustom()].filter(s => !validateSquad(s).length);
 
 export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
   let mode: 'bot' | 'hotseat' | 'online' = 'bot';
@@ -94,6 +95,57 @@ export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
         h('p', { class: 'disclaimer' }, 'Unofficial, non-commercial fan project. Not affiliated with or endorsed by any rights holder. All trademarks belong to their respective owners.'))));
   };
   render();
+}
+
+
+/** Pre-match room: both sides choose a squadron, see each other's, and ready up. */
+export function showLobby(ui: HTMLElement, session: RemoteSession, code: string, onLeave: () => void) {
+  const sq = allSquads();
+  let picked = Math.max(0, sq.findIndex(s => s.name === (session.lobby?.seats[session.lobby.you]?.squad ?? '')));
+  let ready = false;
+  let started = false;
+
+  const render = (l: LobbyState | null) => {
+    if (started) return;
+    if (l?.started) { started = true; return; } // the Game takes the screen from here
+    const you = l?.you ?? 0;
+    const seats = l?.seats ?? [];
+    const mine = seats[you], theirs = seats[1 - you];
+    const clash = !!(mine?.faction && theirs?.faction && mine.faction === theirs.faction);
+
+    const seatRow = (seat: typeof mine, label: string, isYou: boolean) => h('div', { class: `seat${seat?.ready ? ' ready' : ''}` },
+      h('div', { class: 'seat-who' }, h('b', {}, seat?.name ?? 'Waiting for a pilot…'), h('small', {}, label)),
+      h('div', { class: 'seat-squad' },
+        seat?.squad ? h('span', {}, seat.squad, h('em', {}, ` ${seat.faction ? CONTENT.factions[seat.faction]?.name ?? seat.faction : ''}`)) : h('span', { class: 'dim' }, isYou ? 'Choose a squadron' : 'Choosing…')),
+      h('div', { class: 'seat-state' }, seat ? (seat.ready ? 'READY' : 'Not ready') : ''));
+
+    ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card' },
+      h('h2', {}, 'Room ' + code),
+      h('p', { class: 'hint' }, theirs ? 'Both pilots choose a squadron, then ready up.' : 'Send this code to your opponent. The battle starts when you are both ready.'),
+      h('div', { class: 'bigcode' }, code),
+      h('div', { class: 'seats' }, seatRow(mine, 'you', true), seatRow(theirs, 'opponent', false)),
+      clash ? h('p', { class: 'warn-line' }, `Both squadrons are ${CONTENT.factions[mine!.faction!]?.name ?? mine!.faction}. That is legal, but the two sides will look alike — consider switching.`) : null,
+      h('label', {}, 'Your squadron', h('select', {
+        disabled: ready,
+        onchange: (e: Event) => { picked = Number((e.target as HTMLSelectElement).value); session.setSquad(sq[picked]); },
+      }, ...sq.map((s, i) => h('option', { value: i, selected: i === picked }, `${s.name} — ${CONTENT.factions[s.faction]?.name ?? s.faction} (${squadCost(s)} pts)`)))),
+      h('ul', { class: 'squadlist' }, ...sq[picked].ships.map(sh => {
+        const p = CONTENT.pilots[sh.pilotId];
+        const ups = (p.standardLoadout ?? sh.upgrades).map(u => CONTENT.upgrades[u].name).join(', ');
+        return h('li', {}, h('b', {}, `${p.initiative} · ${p.name}`), ` ${CONTENT.ships[p.shipId].name}`, ups ? h('small', {}, ` — ${ups}`) : null);
+      })),
+      h('div', { class: 'rowgap' },
+        h('button', {
+          class: ready ? 'primary big on' : 'primary big', style: { flex: '2' },
+          onclick: () => { ready = !ready; sfx.click(); session.setReady(ready); render(session.lobby); },
+        }, ready ? 'Ready — waiting…' : 'Ready up'),
+        h('button', { onclick: onLeave }, 'Leave')))));
+  };
+
+  session.onLobby(l => render(l));
+  // Publish the opening pick so the opponent sees a squadron straight away.
+  if (sq[picked]) session.setSquad(sq[picked]);
+  render(session.lobby);
 }
 
 function showCredits(ui: HTMLElement, back: () => void) {

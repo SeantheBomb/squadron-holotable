@@ -5,7 +5,7 @@ import { applyCommand, createGame, validateSquad, viewFor } from '@holotable/rul
 import type { Command, GameEvent, GameState, PlayerId, Squad } from '@holotable/rules';
 
 interface Env { MATCH: DurableObjectNamespace<Match> }
-interface Seat { token: string; name: string; squad: Squad }
+interface Seat { token: string; name: string; squad: Squad | null; ready: boolean }
 interface Stored { seats: Seat[]; game: GameState | null }
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
@@ -46,15 +46,26 @@ export class Match extends DurableObject<Env> {
 
   private push(events: GameEvent[]) {
     const d = this.data!;
+    const seats = d.seats.map(s => ({ name: s.name, squad: s.squad?.name ?? null, faction: s.squad?.faction ?? null, ready: s.ready }));
     for (const ws of this.ctx.getWebSockets()) {
       const seat = this.seatOf(ws);
       if (seat < 0) continue;
       ws.send(JSON.stringify({
-        type: 'state', you: seat, events,
-        seats: d.seats.map(s => s.name),
+        type: 'state', you: seat, events, seats, started: !!d.game,
         view: d.game ? viewFor(d.game, seat as PlayerId) : null,
       }));
     }
+  }
+
+  /** Both seats filled, both with a legal squad, both ready. */
+  private tryStart(): GameEvent[] {
+    const d = this.data!;
+    if (d.game || d.seats.length < 2) return [];
+    if (!d.seats.every(s => s.squad && s.ready && !validateSquad(s.squad).length)) return [];
+    const seed = crypto.getRandomValues(new Uint32Array(1))[0];
+    const g = createGame([d.seats[0].squad!, d.seats[1].squad!], [d.seats[0].name, d.seats[1].name], seed);
+    d.game = g.state;
+    return g.events;
   }
 
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
@@ -69,21 +80,46 @@ export class Match extends DurableObject<Env> {
       let seat = d.seats.findIndex(s => s.token === token);
       if (seat < 0) {
         if (d.seats.length >= 2) return fail('Room is full.');
-        const squad = msg.squad as Squad;
-        const errs = squad && Array.isArray(squad.ships) ? validateSquad(squad) : ['Missing squad.'];
-        if (errs.length) return fail(errs.join(' '));
-        d.seats.push({ token, name: String(msg.name ?? 'Pilot').slice(0, 24), squad });
+        if (d.game) return fail('That match has already started.');
+        d.seats.push({ token, name: String(msg.name ?? 'Pilot').slice(0, 24), squad: null, ready: false });
         seat = d.seats.length - 1;
-      }
+      } else if (msg.name) d.seats[seat].name = String(msg.name).slice(0, 24);
       ws.serializeAttachment({ seat });
-      let events: GameEvent[] = [];
-      if (d.seats.length === 2 && !d.game) {
-        const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-        const g = createGame([d.seats[0].squad, d.seats[1].squad], [d.seats[0].name, d.seats[1].name], seed);
-        d.game = g.state; events = g.events;
-      }
+      // A squad sent with the join is only an opening suggestion; the lobby is where it is confirmed.
+      const squad = msg.squad as Squad | undefined;
+      if (!d.game && squad && Array.isArray(squad.ships) && !validateSquad(squad).length) d.seats[seat].squad = squad;
+      await this.save();
+      return this.push([]);
+    }
+
+    if (msg.type === 'setSquad') {
+      const seat = this.seatOf(ws);
+      if (seat < 0) return fail('Not seated.');
+      if (d.game) return fail('The match has already started.');
+      const squad = msg.squad as Squad;
+      const errs = squad && Array.isArray(squad.ships) ? validateSquad(squad) : ['Missing squad.'];
+      if (errs.length) return fail(errs.join(' '));
+      d.seats[seat].squad = squad;
+      d.seats[seat].ready = false; // changing your list drops your ready
+      await this.save();
+      return this.push([]);
+    }
+
+    if (msg.type === 'ready') {
+      const seat = this.seatOf(ws);
+      if (seat < 0) return fail('Not seated.');
+      if (d.game) return this.push([]);
+      if (!d.seats[seat].squad) return fail('Choose a squadron first.');
+      d.seats[seat].ready = !!msg.ready;
+      const events = this.tryStart();
       await this.save();
       return this.push(events);
+    }
+
+    if (msg.type === 'resync') {
+      const seat = this.seatOf(ws);
+      if (seat < 0) return fail('Not seated.');
+      return this.push([]); // re-broadcast current state; no events to replay
     }
 
     if (msg.type === 'cmd') {

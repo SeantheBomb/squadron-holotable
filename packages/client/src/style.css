@@ -109,3 +109,52 @@ button.x { padding: 0 6px; margin-left: 6px; border: none; background: none; col
 .t-focus { background: #46c86e; } .t-evade { background: #9dff6d; } .t-calculate { background: #6dd; } .t-stress { background: var(--red); border-radius: 1px !important; } .t-strain { background: #ff9d6d; border-radius: 1px !important; }
 .t-ion { background: #7db8ff; border-radius: 1px !important; } .t-disarm { background: #ffaa3c; } .t-lock { background: none; border: 2px solid var(--holo); }
 @media (max-width: 1100px) { .column { width: 200px; } .log { display: none; } .prompt { width: calc(100% - 430px); min-width: 0; } }
+
+/* ---------- damage feedback ---------- */
+.floats { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.float {
+  position: absolute; left: 0; top: 0; will-change: transform, opacity;
+  font-family: 'Oxanium', 'Segoe UI', sans-serif; font-weight: 700; font-size: 26px; line-height: 1;
+  letter-spacing: 0.04em; white-space: nowrap; text-shadow: 0 2px 10px #000, 0 0 22px currentColor;
+  animation: floatFade 1.6s ease-out forwards;
+}
+/* The inline transform positions it over the ship; a child does the rising so the two never fight. */
+.float > span { display: block; animation: floatRise 1.6s cubic-bezier(0.16, 0.9, 0.3, 1) forwards; }
+.float.big { font-size: 38px; } .float.huge { font-size: 52px; }
+.float.hull { color: #ffb02e; } .float.shield { color: #6fd0ff; font-size: 19px; font-weight: 600; }
+.float.crit { color: #ff5a4d; }
+.float.crit .tag-crit { font-size: 0.5em; letter-spacing: 0.2em; vertical-align: super; }
+@keyframes floatFade { 0% { opacity: 0; } 10% { opacity: 1; } 68% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes floatRise {
+  0% { transform: translateY(6px) scale(0.4); }
+  14% { transform: translateY(0) scale(1.22); }
+  30% { transform: translateY(-6px) scale(1); }
+  100% { transform: translateY(-84px) scale(0.95); }
+}
+
+.vignette { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
+.vignette.show { animation: vig 0.62s ease-out; }
+.vignette.taken { box-shadow: inset 0 0 180px 40px rgba(255, 40, 25, 0.75); }
+.vignette.dealt { box-shadow: inset 0 0 150px 30px rgba(255, 170, 60, 0.35); }
+.vignette.shield { box-shadow: inset 0 0 140px 26px rgba(80, 190, 255, 0.4); }
+@keyframes vig { 0% { opacity: 0; } 18% { opacity: 1; } 100% { opacity: 0; } }
+
+.card.hit { animation: cardHit 0.6s ease-out; } .card.shielded { animation: cardShield 0.6s ease-out; }
+@keyframes cardHit { 0% { background: rgba(255, 60, 40, 0.55); border-color: var(--red); transform: translateX(0); } 20% { transform: translateX(-4px); } 40% { transform: translateX(4px); } 60% { transform: translateX(-2px); } 100% { background: var(--bg); transform: translateX(0); } }
+@keyframes cardShield { 0% { background: rgba(80, 190, 255, 0.4); border-color: var(--holo); } 100% { background: var(--bg); } }
+
+.crit-banner { animation: critIn 0.35s cubic-bezier(0.2, 1.5, 0.4, 1); }
+.crit-banner h2 { color: #ff5a4d !important; text-shadow: 0 0 40px rgba(255, 60, 40, 0.9), 0 4px 12px #000 !important; font-size: 3rem !important; letter-spacing: 0.32em !important; }
+.crit-banner p { color: #ffd2cd; letter-spacing: 0.22em; }
+@keyframes critIn { from { transform: scale(1.5); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* ---------- pre-match lobby ---------- */
+.seats { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 12px; }
+.seat { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 12px; align-items: center; border: 1px solid var(--line); border-left: 3px solid rgba(94, 200, 255, 0.25); padding: 10px 12px; font-size: 0.85rem; }
+.seat.ready { border-left-color: #46c86e; background: rgba(70, 200, 110, 0.08); }
+.seat-who small { display: block; opacity: 0.5; font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase; }
+.seat-squad em { opacity: 0.6; font-style: normal; } .seat-squad .dim { opacity: 0.45; }
+.seat-state { font-size: 0.7rem; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.75; }
+.seat.ready .seat-state { color: #6dff8f; opacity: 1; }
+.warn-line { color: var(--amber); font-size: 0.8rem; line-height: 1.45; margin: 0 0 10px; border-left: 2px solid var(--amber); padding-left: 10px; }
+button.primary.on { background: rgba(70, 200, 110, 0.75); border-color: #6dff8f; }

@@ -14,11 +14,12 @@ let done = false, msgs = 0, leaks = 0;
 function client(i: number) {
   const ws = new WebSocket(`ws://localhost:8787/api/rooms/${code}/ws`);
   ws.onopen = () => ws.send(JSON.stringify({ type: 'join', token: `token-${i}-abcdefgh`, name: `P${i}`, squad: PRESET_SQUADS[i] }));
+  let readied = false;
   ws.onmessage = e => {
     const m = JSON.parse(e.data as string); msgs++;
     if (m.type === 'error') { console.log('server error:', m.error); return; }
     const G: GameState | null = m.view;
-    if (!G) return;
+    if (!G) { if (!readied && m.seats?.[i]?.squad) { readied = true; ws.send(JSON.stringify({ type: 'ready', ready: true })); } return; }
     const me = m.you as PlayerId;
     for (const s of Object.values(G.ships)) if (s.owner !== me && !s.dialRevealed && s.dial >= 0) leaks++;
     if (G.rng !== 0 || G.deck.length) leaks++;
