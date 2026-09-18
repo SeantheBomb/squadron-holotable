@@ -181,3 +181,7 @@ hr { border: none; border-top: 1px solid rgba(94, 200, 255, 0.18); margin: 18px 
 .choicewho small { display: block; opacity: 0.6; font-size: 0.72rem; }
 .choiceopts { display: flex; flex-wrap: wrap; gap: 5px; }
 .choiceopts button { font-size: 0.78rem; padding: 5px 9px; }
+
+.liveline { display: flex; align-items: center; gap: 8px; font-size: 0.74rem; flex-wrap: wrap; justify-content: center; }
+.livedot { width: 7px; height: 7px; border-radius: 50%; background: #6dff8f; box-shadow: 0 0 8px #6dff8f; animation: livepulse 2.2s ease-in-out infinite; }
+@keyframes livepulse { 50% { opacity: 0.25; } }

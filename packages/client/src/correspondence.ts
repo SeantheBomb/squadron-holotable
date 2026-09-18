@@ -37,6 +37,71 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   let placingIdx = 0;
   let squadPick = 0;
   let camDone = false;
+  // A read marks events seen server-side, so polling would wipe the summary a few seconds after it
+  // appeared. Hold on to it until the player actually takes their turn.
+  let summary: any[] = [];
+
+  // ---------- keeping up to date without being asked ----------
+  // Polls while you are waiting, backs off when nothing is happening, and stops entirely when the
+  // tab is hidden or the move is yours. A forgotten tab settles down instead of hammering the server.
+  const FAST = 4000, SLOW = 30_000, IDLE_GIVE_UP = 15 * 60_000;
+  let pollTimer = 0, backoff = FAST, lastChange = Date.now(), paused = false, disposed = false;
+  const pageTitle = document.title;
+
+  const signature = (t: TurnView) =>
+    [t.started, t.stage, t.waitingOn, t.view?.round ?? 0, t.since?.length ?? 0,
+      t.seats.map(x => `${x?.name}:${x?.squad}:${x?.ready}`).join(',')].join('|');
+
+  function schedule() {
+    clearTimeout(pollTimer);
+    // Nothing can change while it is your move, so stop asking.
+    if (disposed || paused || document.hidden || !turn || turn.yourTurn) return;
+    pollTimer = setTimeout(() => void tick(), backoff) as unknown as number;
+  }
+
+  async function tick() {
+    if (disposed || document.hidden) return schedule();
+    const before = turn ? signature(turn) : '';
+    const wasMine = !!turn?.yourTurn;
+    try {
+      const next = await getTurn(code);
+      if (disposed) return;
+      const changed = signature(next) !== before;
+      turn = next;
+      if (changed) {
+        backoff = FAST; lastChange = Date.now();
+        syncBoard(); render();
+        if (!wasMine && next.yourTurn) announce();
+      } else {
+        backoff = Math.min(SLOW, Math.round(backoff * 1.4));
+      }
+    } catch {
+      backoff = Math.min(60_000, backoff * 2);   // server unreachable: ease off rather than spin
+    }
+    if (Date.now() - lastChange > IDLE_GIVE_UP) { paused = true; render(); return; }
+    schedule();
+  }
+
+  /** It just became your move and you may not be looking at this tab. */
+  function announce() {
+    sfx.phase();
+    document.title = `● Your turn · ${pageTitle}`;
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('Your turn', { body: `${turn?.seats[1 - (turn?.you ?? 0)]?.name ?? 'Your opponent'} has moved.`, tag: `holotable-${code}` });
+      }
+    } catch { /* notifications are a courtesy, never a requirement */ }
+  }
+
+  const onVisibility = () => { if (!document.hidden) { backoff = FAST; void tick(); } };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  const dispose = () => {
+    disposed = true;
+    clearTimeout(pollTimer);
+    document.removeEventListener('visibilitychange', onVisibility);
+    document.title = pageTitle;
+  };
 
   const root = h('div', { class: 'game corr' });
   const els = {
@@ -206,7 +271,23 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
         h('button', { class: mine?.ready ? 'primary on' : 'primary', disabled: busy || !mine?.squad, onclick: () => send({ ready: !mine?.ready }) },
           mine?.ready ? 'Ready — waiting for them' : 'Ready up'),
         h('button', { onclick: () => refresh() }, 'Refresh')),
-      h('p', { class: 'hint' }, theirs ? 'The match starts when you are both ready.' : `Send them the room code ${code} — they can join whenever.`));
+      h('p', { class: 'hint' }, theirs ? 'The match starts when you are both ready.' : `Send them the room code ${code} — they can join whenever.`),
+      liveLine());
+  }
+
+  /** Says whether the page is watching for the opponent, and offers a way back if it gave up. */
+  function liveLine(): HTMLElement {
+    if (paused) {
+      return h('div', { class: 'liveline' },
+        h('span', { class: 'dim' }, 'Stopped checking after a quiet spell.'),
+        h('button', { class: 'chip', onclick: () => { paused = false; lastChange = Date.now(); backoff = FAST; void tick(); render(); } }, 'Resume'));
+    }
+    return h('div', { class: 'liveline' },
+      h('span', { class: 'livedot' }), h('span', { class: 'dim' }, 'Checking automatically'),
+      h('button', { class: 'chip', onclick: () => refresh() }, 'Check now'),
+      'Notification' in window && Notification.permission === 'default'
+        ? h('button', { class: 'chip', onclick: () => void Notification.requestPermission().then(() => render()) }, 'Alert me')
+        : h('span', {}));
   }
 
   // ---------- submit ----------
@@ -226,17 +307,19 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     else packet.choices = choices;
     try {
       const next = await postTurn(code, { packet });
-      deploy = {}; dials = {}; choices = []; selected = null;
+      deploy = {}; dials = {}; choices = []; selected = null; summary = [];
       turn = next; sfx.confirm();
     } catch (e: any) { error = e.message; }
     busy = false;
-    syncBoard(); render();
+    backoff = FAST; lastChange = Date.now(); paused = false;
+    syncBoard(); render(); schedule();
   };
 
   // ---------- chrome ----------
   function render() {
     if (!turn) { els.panel.replaceChildren(h('div', { class: 'waiting' }, 'Loading your turn…')); return; }
     const t = turn;
+    document.title = t.yourTurn ? `● Your turn · ${pageTitle}` : pageTitle;
     const them = t.seats[1 - t.you];
     els.top.replaceChildren(
       h('div', { class: 'score' }, h('span', { class: `p${t.you}` }, t.seats[t.you]?.name ?? 'You'),
@@ -244,7 +327,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       h('div', { class: 'phase' }, t.view ? `Round ${Math.max(1, t.view.round)} · ${t.yourTurn ? STAGE_TITLE[t.stage] ?? t.stage : 'their turn'}` : 'Getting ready'),
       h('div', { class: 'tools' },
         h('button', { class: 'chip', onclick: () => refresh() }, 'Refresh'),
-        h('button', { class: 'chip', onclick: onExit }, 'Back')));
+        h('button', { class: 'chip', onclick: () => { dispose(); onExit(); } }, 'Back')));
 
     if (t.view) {
       els.left.replaceChildren(
@@ -254,10 +337,9 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
         })));
     }
 
-    if (t.since?.length) {
-      const lines = summarise(t.since, t.view);
-      els.log.innerHTML = lines.length ? `<div class="sep">Since your last turn</div>${lines.map(l => `<div>${l}</div>`).join('')}` : '';
-    } else els.log.innerHTML = '';
+    if (t.since?.length) summary = t.since;
+    const lines = summary.length ? summarise(summary, t.view) : [];
+    els.log.innerHTML = lines.length ? `<div class="sep">Since your last turn</div>${lines.map(l => `<div>${l}</div>`).join('')}` : '';
 
     if (!t.started) {
       els.centre.replaceChildren();
@@ -269,8 +351,8 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       els.centre.replaceChildren();
       els.panel.replaceChildren(
         h('div', { class: 'title' }, `Waiting for ${them?.name ?? 'your opponent'}`),
-        h('p', { class: 'hint' }, 'Nothing to do right now. You will get this back when they have moved.'),
-        h('button', { class: 'chip', onclick: () => refresh() }, 'Check again'));
+        h('p', { class: 'hint' }, 'Nothing to do right now — this page updates itself when they move.'),
+        liveLine());
       return;
     }
 
@@ -291,9 +373,9 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   }
 
   async function refresh() {
-    try { turn = await getTurn(code); error = ''; }
+    try { turn = await getTurn(code); error = ''; lastChange = Date.now(); backoff = FAST; paused = false; }
     catch (e: any) { error = e.message; }
-    syncBoard(); render();
+    syncBoard(); render(); schedule();
   }
 
   scene.onShipClick = id => { if (turn?.view?.ships[id]?.owner === me()) { selected = id; render(); } };
