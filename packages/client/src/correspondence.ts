@@ -10,7 +10,7 @@ import {
 import type { DialEntry, GameEvent, GameState, Option, PlayerId, Pose, ShipState } from '@holotable/rules';
 import type { GameScene } from './scene';
 import { dialWheel, h, shipCard } from './hud';
-import { getTurn, postTurn } from './account';
+import { getTurn, postTurn, serverUrl, socketAuth } from './account';
 import { allSquads } from './menu';
 import { sfx } from './audio';
 import { settings } from './settings';
@@ -42,75 +42,13 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   let summary: any[] = [];
   let replaying = false, skipReplay = false;
 
-  // ---------- keeping up to date without being asked ----------
-  // Polls while you are waiting, backs off when nothing is happening, and stops entirely when the
-  // tab is hidden or the move is yours. A forgotten tab settles down instead of hammering the server.
-  const FAST = 4000, SLOW = 30_000, IDLE_GIVE_UP = 15 * 60_000;
-  let pollTimer = 0, backoff = FAST, lastChange = Date.now(), paused = false, disposed = false;
-  const pageTitle = document.title;
-
-  const signature = (t: TurnView) =>
-    [t.started, t.stage, t.waitingOn, t.view?.round ?? 0, t.since?.length ?? 0,
-      t.seats.map(x => `${x?.name}:${x?.squad}:${x?.ready}`).join(',')].join('|');
-
-  function schedule() {
-    clearTimeout(pollTimer);
-    // Nothing can change while it is your move, so stop asking.
-    if (disposed || paused || replaying || document.hidden || !turn || turn.yourTurn) return;
-    pollTimer = setTimeout(() => void tick(), backoff) as unknown as number;
-  }
-
-  async function tick() {
-    if (disposed || replaying || document.hidden) return schedule();
-    const before = turn ? signature(turn) : '';
-    const wasMine = !!turn?.yourTurn;
-    try {
-      const next = await getTurn(code);
-      if (disposed) return;
-      const changed = signature(next) !== before;
-      if (changed) {
-        backoff = FAST; lastChange = Date.now();
-        if (!wasMine && next.yourTurn) announce();
-        await replay(next, (next.since ?? []) as GameEvent[]);
-      } else {
-        turn = next;
-        backoff = Math.min(SLOW, Math.round(backoff * 1.4));
-      }
-    } catch {
-      backoff = Math.min(60_000, backoff * 2);   // server unreachable: ease off rather than spin
-    }
-    if (Date.now() - lastChange > IDLE_GIVE_UP) { paused = true; render(); return; }
-    schedule();
-  }
-
-  /** It just became your move and you may not be looking at this tab. */
-  function announce() {
-    sfx.phase();
-    document.title = `● Your turn · ${pageTitle}`;
-    try {
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('Your turn', { body: `${turn?.seats[1 - (turn?.you ?? 0)]?.name ?? 'Your opponent'} has moved.`, tag: `holotable-${code}` });
-      }
-    } catch { /* notifications are a courtesy, never a requirement */ }
-  }
-
-  const onVisibility = () => { if (!document.hidden) { backoff = FAST; void tick(); } };
-  document.addEventListener('visibilitychange', onVisibility);
-
-  const dispose = () => {
-    disposed = true;
-    clearTimeout(pollTimer);
-    document.removeEventListener('visibilitychange', onVisibility);
-    document.title = pageTitle;
-  };
-
   const root = h('div', { class: 'game corr' });
   const els = {
-    top: h('div', { class: 'topbar' }), left: h('div', { class: 'column left' }),
+    top: h('div', { class: 'topbar' }), left: h('div', { class: 'column left' }), right: h('div', { class: 'column right' }),
     panel: h('div', { class: 'corrpanel' }), centre: h('div', { class: 'center' }),
     log: h('div', { class: 'log' }),
   };
-  root.append(els.top, els.left, els.log, els.centre, els.panel);
+  root.append(els.top, els.left, els.right, els.log, els.centre, els.panel);
   ui.replaceChildren(root);
 
   const me = () => (turn?.you ?? 0) as PlayerId;
@@ -133,6 +71,75 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     } else scene.showZones(false);
   };
 
+  // ---------- keeping up to date without being asked ----------
+  // A socket, not a poll. The server sends a nudge when the match actually moves on, so this sits
+  // silent and costs nothing while you are waiting. If the connection drops it reconnects and
+  // catches up; there is no interval guessing and nothing to give up on.
+  let socket: WebSocket | null = null;
+  let reconnectTimer = 0, reconnectIn = 1000, disposed = false, pendingCatchUp = false;
+  let connected = false;
+  const pageTitle = document.title;
+
+  function listen() {
+    if (disposed) return;
+    try {
+      socket = new WebSocket(`${serverUrl().replace(/^http/, 'ws')}/api/rooms/${code}/ws${socketAuth()}`);
+    } catch { return retry(); }
+    socket.onopen = () => {
+      connected = true; reconnectIn = 1000;
+      socket?.send(JSON.stringify({ type: 'watch' }));
+      void catchUp();                       // anything that happened while we were away
+      render();
+    };
+    socket.onmessage = e => {
+      try { if (JSON.parse(e.data).type !== 'turn') return; } catch { return; }
+      void catchUp();
+    };
+    socket.onclose = () => { connected = false; socket = null; render(); retry(); };
+    socket.onerror = () => { try { socket?.close(); } catch { /* already gone */ } };
+  }
+
+  function retry() {
+    if (disposed) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { reconnectIn = Math.min(30_000, reconnectIn * 2); listen(); }, reconnectIn) as unknown as number;
+  }
+
+  /** Fetch the authoritative turn. Held back during a replay so playback is never interrupted. */
+  async function catchUp() {
+    if (disposed) return;
+    if (replaying) { pendingCatchUp = true; return; }
+    const wasMine = !!turn?.yourTurn;
+    try {
+      const next = await getTurn(code);
+      if (disposed) return;
+      if (!wasMine && next.yourTurn) announce();
+      await replay(next, (next.since ?? []) as GameEvent[]);
+    } catch { /* the socket will reconnect and try again */ }
+  }
+
+  /** It just became your move and you may not be looking at this tab. */
+  function announce() {
+    sfx.phase();
+    document.title = `● Your turn · ${pageTitle}`;
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('Your turn', { body: `${turn?.seats[1 - (turn?.you ?? 0)]?.name ?? 'Your opponent'} has moved.`, tag: `holotable-${code}` });
+      }
+    } catch { /* notifications are a courtesy, never a requirement */ }
+  }
+
+  // Coming back to the tab is a good moment to make sure nothing was missed.
+  const onVisibility = () => { if (!document.hidden) void catchUp(); };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  const dispose = () => {
+    disposed = true;
+    clearTimeout(reconnectTimer);
+    document.removeEventListener('visibilitychange', onVisibility);
+    try { socket?.close(); } catch { /* already gone */ }
+    document.title = pageTitle;
+  };
 
   // ---------- watching what happened ----------
 
@@ -183,6 +190,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     await scene.endAttack();
     replaying = false;
     syncBoard(); render();
+    if (pendingCatchUp) { pendingCatchUp = false; void catchUp(); }
   }
 
   // ---------- stage panels ----------
@@ -333,13 +341,9 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
 
   /** Says whether the page is watching for the opponent, and offers a way back if it gave up. */
   function liveLine(): HTMLElement {
-    if (paused) {
-      return h('div', { class: 'liveline' },
-        h('span', { class: 'dim' }, 'Stopped checking after a quiet spell.'),
-        h('button', { class: 'chip', onclick: () => { paused = false; lastChange = Date.now(); backoff = FAST; void tick(); render(); } }, 'Resume'));
-    }
     return h('div', { class: 'liveline' },
-      h('span', { class: 'livedot' }), h('span', { class: 'dim' }, 'Checking automatically'),
+      h('span', { class: `livedot${connected ? '' : ' off'}` }),
+      h('span', { class: 'dim' }, connected ? 'Listening for their move' : 'Reconnecting…'),
       h('button', { class: 'chip', onclick: () => refresh() }, 'Check now'),
       'Notification' in window && Notification.permission === 'default'
         ? h('button', { class: 'chip', onclick: () => void Notification.requestPermission().then(() => render()) }, 'Alert me')
@@ -368,13 +372,10 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       sfx.confirm();
       busy = false;
       await replay(next, (next.since ?? []) as GameEvent[]);
-      backoff = FAST; lastChange = Date.now(); paused = false;
-      schedule();
       return;
     } catch (e: any) { error = e.message; }
     busy = false;
-    backoff = FAST; lastChange = Date.now(); paused = false;
-    syncBoard(); render(); schedule();
+    syncBoard(); render();
   };
 
   // ---------- chrome ----------
@@ -408,10 +409,19 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     renderTop(t);
 
     if (t.view) {
+      const theirs = Object.values(t.view.ships).filter(s => s.owner !== t.you);
       els.left.replaceChildren(
         h('h3', { class: `p${t.you}` }, 'Your squadron'),
         ...(t.stage === 'deploy' ? mySquadron() : myShips()).map(s => shipCard(t.view!, s, true, dials[s.id], {
           click: () => { selected = s.id; render(); }, enter: () => {}, leave: () => {},
+        })));
+      // Their cards come from the same redacted view the board does: hidden dials stay hidden and
+      // facedown damage stays facedown, so there is nothing here you are not allowed to know.
+      els.right.replaceChildren(
+        h('h3', { class: `p${1 - t.you}` }, t.seats[1 - t.you]?.name ?? 'Opponent'),
+        ...theirs.map(s => shipCard(t.view!, s, false, undefined, {
+          click: () => {}, enter: () => { scene.clearOverlay(); if (s.placed && !s.removed) scene.highlight(s.id, new Color3(1, 0.35, 0.2)); },
+          leave: () => syncBoard(),
         })));
     }
 
@@ -452,17 +462,14 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
 
   async function refresh() {
     if (replaying) return;
-    try {
-      const next = await getTurn(code);
-      error = ''; lastChange = Date.now(); backoff = FAST; paused = false;
-      await replay(next, (next.since ?? []) as GameEvent[]);
-    } catch (e: any) { error = e.message; render(); }
-    schedule();
+    error = '';
+    await catchUp();
   }
 
   scene.onShipClick = id => { if (turn?.view?.ships[id]?.owner === me()) { selected = id; render(); } };
   render();
-  void refresh();
+  listen();          // opens the socket, which fetches the current turn once connected
+  void catchUp();    // ...and do not wait on the handshake to show something
 }
 
 /** A short, readable account of what the opponent did while you were away. */

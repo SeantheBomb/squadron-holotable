@@ -188,6 +188,7 @@ export class Match extends DurableObject<Env> {
       }
       await this.save();
       await this.index();
+      this.nudge();
       return json(this.turnView(seat, user));
     }
 
@@ -232,6 +233,13 @@ export class Match extends DurableObject<Env> {
 
   private attach(ws: WebSocket): { seat: number; user?: { id: string; username: string } } {
     return (ws.deserializeAttachment() as any) ?? { seat: -1 };
+  }
+
+  /** Tell every open socket that the match moved on; they fetch the detail themselves. */
+  private nudge() {
+    for (const ws of this.ctx.getWebSockets()) {
+      try { ws.send(JSON.stringify({ type: 'turn' })); } catch { /* closing sockets are dropped by the runtime */ }
+    }
   }
 
   /** Mirror the parts of the game the match list needs. */
@@ -329,6 +337,13 @@ export class Match extends DurableObject<Env> {
       await this.save();
       await this.index();
       return this.push(events);
+    }
+
+    // A correspondence client holds a socket open purely to be told when something changed. It
+    // never drives the game over the socket, so there is nothing to seat and nothing to push.
+    if (msg.type === 'watch') {
+      ws.send(JSON.stringify({ type: 'watching' }));
+      return;
     }
 
     if (msg.type === 'resync') {
