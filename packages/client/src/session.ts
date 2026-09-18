@@ -2,6 +2,7 @@
 import { applyCommand, createGame, viewFor } from '@holotable/rules';
 import type { Command, GameEvent, GameState, PlayerId, Squad } from '@holotable/rules';
 import type { BotOptions } from '@holotable/bot';
+import { socketAuth } from './account';
 
 export interface Update { view: GameState; events: GameEvent[] }
 export interface LobbySeat { name: string; squad: string | null; faction: string | null; ready: boolean }
@@ -91,10 +92,11 @@ export class RemoteSession implements Session {
   lobby: LobbyState | null = null;
 
   constructor(serverUrl: string, readonly code: string, name: string, squad: Squad) {
+    // localStorage, not sessionStorage: a seat claim has to outlive the tab, or a reload loses the match.
     const tokenKey = `holotable-token-${code}`;
-    let token = sessionStorage.getItem(tokenKey);
-    if (!token) { token = crypto.randomUUID(); sessionStorage.setItem(tokenKey, token); }
-    this.ws = new WebSocket(`${serverUrl.replace(/^http/, 'ws')}/api/rooms/${code}/ws`);
+    let token = localStorage.getItem(tokenKey);
+    if (!token) { token = crypto.randomUUID(); localStorage.setItem(tokenKey, token); }
+    this.ws = new WebSocket(`${serverUrl.replace(/^http/, 'ws')}/api/rooms/${code}/ws${socketAuth()}`);
     this.ws.onopen = () => this.ws.send(JSON.stringify({ type: 'join', token, name, squad }));
     this.ws.onmessage = e => {
       const msg = JSON.parse(e.data);

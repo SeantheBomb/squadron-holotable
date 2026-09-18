@@ -6,6 +6,7 @@ import type { LobbyState, RemoteSession } from './session';
 import { h } from './hud';
 import { activePack, importXws } from './pack';
 import { sfx } from './audio';
+import * as Acct from './account';
 
 export type Launch =
   | { mode: 'bot'; squads: [Squad, Squad]; bot: BotOptions; name: string }
@@ -68,8 +69,8 @@ export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
         h('div', { class: 'rowgap' },
           h('button', { class: 'primary', onclick: async () => {
             status = 'Opening a room…'; render();
-            try { const res = await fetch(`${server}/api/rooms`, { method: 'POST' }); const j = await res.json(); go(j.code); }
-            catch { status = 'Could not reach the match server.'; render(); }
+            try { go(await Acct.createRoom('live')); }
+            catch (e: any) { status = e?.message ?? 'Could not reach the match server.'; render(); }
           } }, 'Create room'),
           h('input', { placeholder: 'ROOM CODE', maxlength: 5, class: 'code', value: code, oninput: (e: Event) => (code = (e.target as HTMLInputElement).value) }),
           h('button', { onclick: () => (code.trim().length === 5 ? go(code.trim()) : (status = 'Room codes are 5 characters.', render())) }, 'Join')),
@@ -78,6 +79,7 @@ export function showMenu(ui: HTMLElement, launch: (l: Launch) => void) {
 
     ui.replaceChildren(h('div', { class: 'menu' },
       h('div', { class: 'menu-card' },
+        accountBar(ui, render),
         h('h1', {}, 'SQUADRON HOLOTABLE'),
         h('p', { class: 'tagline' }, activePack ? `Content pack: ${activePack.name}` : 'Tactical starfighter combat'),
         h('div', { class: 'tabs' }, tab('bot', 'Versus AI'), tab('hotseat', 'Hotseat'), tab('online', 'Online')),
@@ -146,6 +148,133 @@ export function showLobby(ui: HTMLElement, session: RemoteSession, code: string,
   // Publish the opening pick so the opponent sees a squadron straight away.
   if (sq[picked]) session.setSquad(sq[picked]);
   render(session.lobby);
+}
+
+
+// ---------------- accounts ----------------
+
+const ago = (t: number) => {
+  const m = Math.round((Date.now() - t) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+};
+
+/** The strip at the top of the hangar: who you are, or a way to become someone. */
+function accountBar(ui: HTMLElement, back: () => void): HTMLElement {
+  if (!Acct.signedIn()) {
+    return h('div', { class: 'acctbar' },
+      h('span', { class: 'dim' }, 'Playing as a guest'),
+      h('button', { class: 'chip', onclick: () => showAccount(ui, back) }, 'Sign in / create account'));
+  }
+  return h('div', { class: 'acctbar' },
+    h('span', {}, 'Signed in as ', h('b', {}, Acct.account!.username)),
+    h('div', { class: 'rowgap' },
+      h('button', { class: 'chip', onclick: () => showGames(ui, back) }, 'My games'),
+      h('button', { class: 'chip', onclick: () => showAccount(ui, back) }, 'Account')));
+}
+
+export function showAccount(ui: HTMLElement, back: () => void) {
+  let mode: 'in' | 'up' = Acct.signedIn() ? 'in' : 'up';
+  let busy = false, error = '', note = '';
+
+  const render = () => {
+    if (Acct.signedIn()) {
+      const a = Acct.account!;
+      ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card' },
+        h('h2', {}, 'Account'),
+        h('p', {}, 'Signed in as ', h('b', {}, a.username)),
+        h('label', {}, 'Email (optional)',
+          h('input', { id: 'acct-email', type: 'email', value: a.email ?? '', placeholder: 'none' })),
+        h('p', { class: 'hint' }, 'Only ever used to reset your password and to tell you it is your turn. Leave it blank and we will not ask again — you can still get turn alerts in the browser.'),
+        note ? h('p', { class: 'ok-line' }, note) : null,
+        error ? h('p', { class: 'err' }, error) : null,
+        h('div', { class: 'rowgap' },
+          h('button', { class: 'primary', onclick: async () => {
+            const v = (document.getElementById('acct-email') as HTMLInputElement).value.trim();
+            try { await Acct.updateEmail(v || null); a.email = v || null; note = 'Saved.'; error = ''; }
+            catch (e: any) { error = e.message; note = ''; }
+            render();
+          } }, 'Save'),
+          h('button', { onclick: async () => { await Acct.signOut(); back(); } }, 'Sign out'),
+          h('button', { onclick: back }, 'Back')),
+        h('hr'),
+        h('p', { class: 'hint' }, 'Deleting your account removes your sign-in, your email if you gave one, and your turn alerts. Games you played stay, with your seat unclaimed.'),
+        h('button', { class: 'danger', onclick: async () => {
+          if (!confirm('Delete your account? This cannot be undone.')) return;
+          await Acct.deleteAccount(); back();
+        } }, 'Delete my account'))));
+      return;
+    }
+
+    const field = (id: string, label: string, type = 'text', placeholder = '') =>
+      h('label', {}, label, h('input', { id, type, placeholder, autocomplete: type === 'password' ? (mode === 'up' ? 'new-password' : 'current-password') : 'username' }));
+
+    const submit = async () => {
+      if (busy) return;
+      const u = (document.getElementById('acct-user') as HTMLInputElement).value.trim();
+      const p = (document.getElementById('acct-pass') as HTMLInputElement).value;
+      const e = mode === 'up' ? (document.getElementById('acct-mail') as HTMLInputElement).value.trim() : '';
+      busy = true; error = ''; note = 'Working…'; render();
+      try {
+        if (mode === 'up') await Acct.register(u, p, e || undefined); else await Acct.signIn(u, p);
+        back();
+      } catch (err: any) { error = err.message; note = ''; busy = false; render(); }
+    };
+
+    ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card' },
+      h('h2', {}, mode === 'up' ? 'Create an account' : 'Sign in'),
+      h('p', { class: 'hint' }, 'You only need an account for correspondence games. Live and solo play never ask for one.'),
+      h('div', { class: 'tabs' },
+        h('button', { class: `tab${mode === 'up' ? ' on' : ''}`, onclick: () => { mode = 'up'; error = ''; render(); } }, 'Create'),
+        h('button', { class: `tab${mode === 'in' ? ' on' : ''}`, onclick: () => { mode = 'in'; error = ''; render(); } }, 'Sign in')),
+      field('acct-user', 'Username'),
+      field('acct-pass', 'Password', 'password'),
+      mode === 'up' ? field('acct-mail', 'Email (optional)', 'email', 'leave blank if you prefer') : null,
+      mode === 'up' ? h('p', { class: 'hint' }, 'No email means no password reset — if you forget it, the account is gone. Your password is scrambled in this browser and never sent.') : null,
+      note ? h('p', { class: 'ok-line' }, note) : null,
+      error ? h('p', { class: 'err' }, error) : null,
+      h('div', { class: 'rowgap' },
+        h('button', { class: 'primary', disabled: busy, onclick: submit }, mode === 'up' ? 'Create account' : 'Sign in'),
+        h('button', { onclick: back }, 'Back')))));
+    const u = document.getElementById('acct-user') as HTMLInputElement | null;
+    u?.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') submit(); });
+    (document.getElementById('acct-pass') as HTMLInputElement | null)?.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter') submit(); });
+  };
+  render();
+}
+
+/** Every match this account is in, the ones waiting on you first. */
+export function showGames(ui: HTMLElement, back: () => void, onOpen?: (code: string) => void) {
+  let rows: Acct.MatchSummary[] | null = null, error = '';
+
+  const render = () => {
+    const list = rows === null
+      ? [h('p', { class: 'hint' }, 'Loading…')]
+      : rows.length === 0
+        ? [h('p', { class: 'hint' }, 'No games yet. Start a correspondence match and it will show up here.')]
+        : rows.map(m => {
+          const them = (m.you === 0 ? m.p1_name : m.p0_name) ?? 'waiting for an opponent';
+          return h('div', { class: `gamerow${m.yourTurn ? ' yours' : ''}` },
+            h('div', {},
+              h('b', {}, `vs ${them}`),
+              h('small', {}, ` ${m.mode === 'correspondence' ? 'correspondence' : 'live'} · ${m.status === 'lobby' ? 'not started' : m.status === 'over' ? 'finished' : `round ${m.round}`} · ${ago(m.updated_at)}`)),
+            h('div', { class: 'gamerow-state' },
+              m.status === 'over' ? 'Finished'
+                : m.status === 'lobby' ? (them === 'waiting for an opponent' ? 'Waiting for an opponent' : 'Getting ready')
+                : m.yourTurn ? 'YOUR TURN' : 'Their turn'),
+            h('button', { class: m.yourTurn ? 'primary' : '', onclick: () => onOpen?.(m.code) }, m.status === 'over' ? 'Review' : 'Open'));
+        });
+
+    ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card wide' },
+      h('h2', {}, 'My games'),
+      error ? h('p', { class: 'err' }, error) : null,
+      h('div', { class: 'gamelist' }, ...list),
+      h('div', { class: 'rowgap' }, h('button', { onclick: back }, 'Back')))));
+  };
+  render();
+  Acct.myMatches().then(m => { rows = m; render(); }).catch(e => { error = e.message; rows = []; render(); });
 }
 
 function showCredits(ui: HTMLElement, back: () => void) {

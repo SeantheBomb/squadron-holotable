@@ -3,6 +3,7 @@ import { Game } from './game';
 import { LocalSession, RemoteSession } from './session';
 import { Launch, showLobby, showMenu } from './menu';
 import { loadPack } from './pack';
+import { restore } from './account';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const ui = document.getElementById('ui')!;
@@ -31,4 +32,4 @@ function start(l: Launch) {
 function menu() { scene.setHolo(true); showMenu(ui, start); }
 
 const photo = (import.meta as any).env?.DEV ? new URLSearchParams(location.search).get('photo') : null;
-void loadPack().finally(() => (photo ? import('./photo').then(m => m.runPhoto(scene, photo)) : menu()));
+void Promise.all([loadPack(), restore()]).finally(() => (photo ? import('./photo').then(m => m.runPhoto(scene, photo)) : menu()));

@@ -9,3 +9,8 @@ class_name = "Match"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Match"]
+
+[[d1_databases]]
+binding = "holotable"
+database_name = "holotable"
+database_id = "11e08a9e-04ac-46b8-8887-47924d203440"

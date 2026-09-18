@@ -158,3 +158,15 @@ button.x { padding: 0 6px; margin-left: 6px; border: none; background: none; col
 .seat.ready .seat-state { color: #6dff8f; opacity: 1; }
 .warn-line { color: var(--amber); font-size: 0.8rem; line-height: 1.45; margin: 0 0 10px; border-left: 2px solid var(--amber); padding-left: 10px; }
 button.primary.on { background: rgba(70, 200, 110, 0.75); border-color: #6dff8f; }
+
+/* ---------- accounts ---------- */
+.acctbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: -8px 0 14px; padding-bottom: 10px; border-bottom: 1px solid rgba(94, 200, 255, 0.18); font-size: 0.8rem; flex-wrap: wrap; }
+.acctbar .dim { opacity: 0.55; }
+.ok-line { color: #6dff8f; font-size: 0.82rem; margin: 6px 0 0; }
+hr { border: none; border-top: 1px solid rgba(94, 200, 255, 0.18); margin: 18px 0 12px; }
+.gamelist { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; max-height: 52vh; overflow: auto; }
+.gamerow { display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center; border: 1px solid var(--line); border-left: 3px solid rgba(94, 200, 255, 0.3); padding: 10px 12px; font-size: 0.86rem; }
+.gamerow.yours { border-left-color: var(--amber); background: rgba(255, 200, 87, 0.07); }
+.gamerow small { display: block; opacity: 0.6; font-size: 0.74rem; }
+.gamerow-state { font-size: 0.7rem; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.7; }
+.gamerow.yours .gamerow-state { color: var(--amber); opacity: 1; font-weight: 600; }
