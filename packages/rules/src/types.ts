@@ -82,6 +82,8 @@ export interface ShipState {
   activated: boolean; engaged: boolean;
   destroyed: boolean; removed: boolean; fled: boolean;
   wasIonizedAtReveal?: boolean;
+  /** correspondence variant: an action owed to this ship once every ship has finished moving */
+  owedAction?: { bumpedEnemy: boolean; ionized: boolean } | null;
 }
 
 export type ObstacleKind = 'asteroid' | 'debris' | 'gas';
@@ -140,7 +142,15 @@ export interface GameState {
   options: GameOptions;
 }
 
-export interface GameOptions { maxRounds: number; targetScore: number; obstacleCount: number }
+/**
+ * `correspondence` batches the activation phase: every ship moves, and only then does every ship
+ * act. It exists so an asynchronous game can ask each player for all their actions in one go,
+ * instead of once per ship. It is a real rules change — in the standard game a ship acts before
+ * higher-initiative ships have moved, so batching hands everyone perfect information when choosing
+ * actions and slightly devalues initiative.
+ */
+export type Variant = 'standard' | 'correspondence';
+export interface GameOptions { maxRounds: number; targetScore: number; obstacleCount: number; variant: Variant }
 
 export type GameEvent =
   | { t: 'round'; round: number; firstPlayer: PlayerId }

@@ -1,7 +1,8 @@
 # Correspondence Mode — feasibility and scope
 
-Assessment only. Nothing here is built. Measurements are from the current engine (24 bot-vs-bot
-games, 235 rounds, 5,461 decisions) — reproduce with the script in "How the numbers were taken".
+Measurements are from the engine itself (24 bot-vs-bot games, 235 rounds, 5,461 decisions).
+Phases 0 and 3 are built and deployed; the variant engine and packet layer are built and measured.
+The server turn flow and the player-facing correspondence UI are not built yet — see §9.
 
 ---
 
@@ -16,7 +17,7 @@ Three of the four asks are far closer than they look, and the fourth is the whol
 | Notifications | Needed, small, and free. |
 | A correspondence rules variant | **The real work.** A naive port is unplayable, by a factor of about 35. |
 
-The thing that makes this tractable: **the variant needs no changes to the rules engine.** See §3.
+The thing that makes this tractable: the variant is one flag in the engine plus a policy layer above it, not a fork. See §3.
 
 ---
 
@@ -66,7 +67,8 @@ Two candidate shapes:
 5. *Server resolves attacks* in initiative order, applying policies.
 
 **10 decisions per round becomes 3.** A 12-round game is ~36 exchanges — a few weeks at a couple of
-moves a day, which is normal for correspondence.
+moves a day, which is normal for correspondence. **Measured and held by a regression test:** median
+3 sittings per player per round against a naive 10, with the action phase handing over exactly once.
 
 **What it changes about the game, honestly:** in the tabletop a ship moves *and acts* before higher
 initiative ships have moved, so low-initiative pilots act half blind. Batching actions to after all
@@ -87,12 +89,18 @@ ship dies first needs a stated fallback. I would not start here.
 - Do abilities that trigger "after you defend" get a policy, or a prompt?
 - Ordnance is the sharp edge: spending a charge on a target that is already dead wastes it.
 
-**Recommendation:** build A, keep live mode rules-faithful, and label the variant clearly so nobody
-thinks it is the tabletop game.
+**Decided:** A, with the initiative cost accepted. Live mode stays rules-faithful, and the variant
+is labelled clearly so nobody mistakes it for the tabletop game.
 
 ---
 
-## 3. The architecture win: no engine fork
+## 3. The architecture: a policy layer, and one variant flag
+
+**Correction to an earlier draft of this document, which claimed zero engine changes.** Batching
+*attacks* needs none — a packet answers the prompts as they arrive, and a ship destroyed before its
+initiative step is simply never asked. But batching *actions* does need a flow change, because a
+repositioning action by an early ship changes whether a later ship bumps. That is now a variant flag
+inside the engine (`GameOptions.variant`), not a fork: both modes still share one rules package.
 
 The rules engine is already a deterministic state machine — `applyCommand(state, command)` answers
 whatever `state.pending` asks, and `viewFor()` redacts per player. The bot already drives it by
@@ -105,8 +113,8 @@ So a correspondence turn is just **the bot pattern with a human's policy**:
 2. The server runs the engine forward, answering each `pending` from the packet.
 3. It stops at the first decision the packet does not cover, and notifies whoever owns it.
 
-**This needs zero changes to `packages/rules`.** Live and correspondence share one engine, so the
-rules cannot drift apart. The variant lives in a policy layer above it.
+Beyond that one flag, nothing else about the rules changes. Live and correspondence share one
+engine, so they cannot drift apart. The variant lives in a policy layer above it.
 
 Better still, `packages/bot` already contains principled dice-modification and action-valuation
 logic, so the default policies are largely written — "let the flight computer decide" can be a real,
@@ -129,8 +137,10 @@ There is also a **bug today**: the seat token lives in `sessionStorage`, which i
 tab closes. Even a live match cannot currently be rejoined from a fresh tab. Moving it to
 `localStorage` is a one-line fix and is worth doing regardless of whether correspondence happens.
 
-**Recommendation:** secret links first (no accounts, no PII, proves the plumbing), Discord OAuth as
-the real answer. Avoid email.
+**Decided and built:** username + password, email strictly optional. Discord was rejected as just as
+identifying as email. Note that email cannot deduplicate accounts — plus-addressing and disposable
+mail make that trivial to defeat — so it is offered only for password recovery and turn alerts.
+The browser stretches the password (PBKDF2, 600k iterations) and sends only a derived key.
 
 ---
 
@@ -210,10 +220,10 @@ Mitigations, all cheap:
 
 | Phase | Deliverable | Size |
 |---|---|---|
-| **0** | `localStorage` seat tokens + rejoin-by-URL. Fixes live play too. | Hours |
+| **0** | `localStorage` seat tokens + rejoin-by-URL. Fixes live play too. **Done.** | Hours |
 | **1** | Secret claim links + async turns on the **existing** rules. Proves the plumbing end to end. Only playable by the very patient — that is the point, it is a test. | Small |
-| **2** | **The correspondence variant** (§2A) as a policy layer. The bulk of the design and playtesting work. | **Large** |
-| **3** | D1 match index + in-site "your turn" dashboard. | Medium |
+| **2** | **The correspondence variant** (§2A). **Engine variant and packet layer done and measured — 3 sittings per round against a naive 10, with the action phase handing over exactly once. Server turn flow and the player-facing UI are still to build.** | **Large** |
+| **3** | D1 match index + in-site "your turn" dashboard. **Done**, along with accounts (§4). | Medium |
 | **4** | Web Push, then Discord OAuth and DMs. Turn timers on Durable Object alarms. | Medium |
 | **5** | Replays, profiles, open challenges. Ratings only if §7 is acceptable. | Medium+ |
 

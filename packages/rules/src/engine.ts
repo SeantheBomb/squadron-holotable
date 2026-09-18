@@ -11,7 +11,7 @@ import type {
 } from './types';
 import { CONTENT } from './content';
 
-export const DEFAULT_OPTIONS: GameOptions = { maxRounds: 12, targetScore: 20, obstacleCount: 6 };
+export const DEFAULT_OPTIONS: GameOptions = { maxRounds: 12, targetScore: 20, obstacleCount: 6, variant: 'standard' };
 export const SQUAD_LIMIT = 20;
 
 type Ev = GameEvent[];
@@ -118,7 +118,7 @@ function makeShip(owner: PlayerId, n: number, pilotId: string, upgrades: string[
     pose: { x: 0, y: 0, r: 0 }, placed: false, hull, shieldsMax: shields, shields, damage: [], upgrades: ups,
     charges: p.charges?.value ?? 0, force: p.force?.value ?? 0, forceMax: p.force?.value ?? 0,
     tokens: { focus: 0, evade: 0, calculate: 0, stress: 0, strain: 0, ion: 0, disarm: 0 },
-    lock: null, turret: hasTurret ? 'front' : null, dial: -1, dialRevealed: false,
+    lock: null, turret: hasTurret ? 'front' : null, dial: -1, dialRevealed: false, owedAction: null,
     actionsThisRound: [], activated: false, engaged: false, destroyed: false, removed: false, fled: false,
   };
 }
@@ -692,6 +692,22 @@ function run(G: GameState, f: Frame, ev: Ev) {
       return choice(G, next[0].owner, 'activateShip', 'Choose a ship to activate', next.map(s => ({ id: s.id, label: `${pilotDef(s).name} (${s.label})`, shipId: s.id })));
     }
     case 'activateShip': return runActivate(G, f, ev);
+    case 'actionPhase': {
+      // Actions are independent of each other now that all movement is done, so initiative order is
+      // kept only for tidiness and ties need no player choice.
+      const pool = activeShips(G).filter(s => s.owedAction);
+      if (!pool.length) return pop(G);
+      // Group by owner: one player answers for all of their ships before the other is asked at all,
+      // which is what lets a correspondence player settle the whole phase in a single sitting.
+      let owner = f.owner as PlayerId | undefined;
+      if (owner === undefined || !pool.some(x => x.owner === owner)) { owner = nextInOrder(G, pool, true)[0].owner; f.owner = owner; }
+      const s = nextInOrder(G, pool.filter(x => x.owner === owner), true)[0];
+      const owed = s.owedAction!;
+      s.owedAction = null;
+      if (owed.bumpedEnemy) G.stack.push({ type: 'action', step: 0, shipId: s.id, allowed: ['focus', 'calculate'], forceRed: true, barOnly: true, noChain: true });
+      else G.stack.push({ type: 'action', step: 0, shipId: s.id, allowed: owed.ionized ? ['focus'] : undefined, barOnly: owed.ionized });
+      return;
+    }
     case 'action': return runAction(G, f, ev);
     case 'ability': {
       const s = G.ships[f.shipId];
@@ -725,7 +741,7 @@ function runRound(G: GameState, f: Frame, ev: Ev) {
   switch (f.step) {
     case 0: {
       G.round++; G.phase = 'planning';
-      for (const s of liveShips(G)) { s.dial = -1; s.dialRevealed = false; s.activated = false; s.engaged = false; s.actionsThisRound = []; }
+      for (const s of liveShips(G)) { s.dial = -1; s.dialRevealed = false; s.activated = false; s.engaged = false; s.actionsThisRound = []; s.owedAction = null; }
       ev.push({ t: 'phase', phase: 'planning' });
       G.pending = { type: 'planning', players: ([0, 1] as PlayerId[]).filter(p => liveShips(G).some(s => s.owner === p)) };
       f.step = 1; return;
@@ -736,7 +752,9 @@ function runRound(G: GameState, f: Frame, ev: Ev) {
       G.phase = 'system'; ev.push({ t: 'phase', phase: 'system' });
       f.step = 2; return;
     case 2: G.phase = 'activation'; ev.push({ t: 'phase', phase: 'activation' }); G.stack.push({ type: 'activationPhase', step: 0 }); f.step = 3; return;
-    case 3: G.phase = 'engagement'; ev.push({ t: 'phase', phase: 'engagement' }); G.stack.push({ type: 'engagementPhase', step: 0 }); f.step = 4; return;
+    case 3:
+      if (G.options.variant === 'correspondence' && liveShips(G).some(s => s.owedAction)) { G.stack.push({ type: 'actionPhase', step: 0 }); return; }
+      G.phase = 'engagement'; ev.push({ t: 'phase', phase: 'engagement' }); G.stack.push({ type: 'engagementPhase', step: 0 }); f.step = 4; return;
     case 4: {
       G.phase = 'end'; ev.push({ t: 'phase', phase: 'end' });
       for (const s of liveShips(G)) {
@@ -839,7 +857,12 @@ function runActivate(G: GameState, f: Frame, ev: Ev) {
     }
     case 5: {
       f.step = 6;
-      if (f.bump === 'friendly') return;
+      if (f.bump === 'friendly') return; // bumping a friend costs you the action outright
+      if (G.options.variant === 'correspondence') {
+        // Bank it: every ship moves first, then the Action Phase collects all of them at once.
+        s.owedAction = { bumpedEnemy: f.bump === 'enemy', ionized: !!f.ion };
+        return;
+      }
       if (f.bump === 'enemy') { G.stack.push({ type: 'action', step: 0, shipId: s.id, allowed: ['focus', 'calculate'], forceRed: true, barOnly: true, noChain: true }); return; }
       G.stack.push({ type: 'action', step: 0, shipId: s.id, allowed: f.ion ? ['focus'] : undefined, barOnly: f.ion });
       return;
