@@ -4,7 +4,7 @@
 // one sitting: place the whole squadron, set every dial, choose every action, declare every attack.
 import { Color3 } from '@babylonjs/core';
 import {
-  CONTENT, PLAY_AREA, activeShips, attackOptions, deploymentValid, dialFor, offeredActions,
+  CONTENT, PLAY_AREA, activeShips, attackOptions, deploymentValid, dialFor, isStressed, offeredActions,
   pilotDef, previewManeuver, shipDef,
 } from '@holotable/rules';
 import type { DialEntry, GameEvent, GameState, Option, PlayerId, Pose, ShipState } from '@holotable/rules';
@@ -261,13 +261,30 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     scene.showArc(pose, 'front', new Color3(0.4, 1, 0.8));
   };
 
-  /** Actions and attacks share a shape: one row per ship, one choice each. */
+  /**
+   * One row per ship, every round, for the whole squadron — orders for all of them in a single pass.
+   *
+   * The engine clears a ship's owed action the moment it raises that ship's prompt, so the ship
+   * being asked about looks like it has nothing to offer. Its real options are on the pending
+   * decision, so take them from there; otherwise the player never sees that ship at all.
+   */
   function choicePanel(kind: 'action' | 'attack'): HTMLElement {
-    const rows = myShips()
-      .map(s => ({ s, options: kind === 'action' ? offeredActions(G(), s) : attackOptions(G(), s) }))
-      .filter(r => r.options.length);
-    if (!rows.length) return h('p', { class: 'hint' }, kind === 'action' ? 'No ship can act this round.' : 'No ship has a target in arc. Submit to hold fire.');
-    for (const { s: ship } of rows) if (!choices.some(c => c.kind === kind && c.shipId === ship.id)) choices.push({ kind, shipId: ship.id, option: 'pass' });
+    const P = G().pending;
+    const promptedId = P && P.type === 'choice' && P.player === me() && P.kind === kind ? P.shipId : null;
+    const optionsFor = (s: ShipState): Option[] =>
+      s.id === promptedId && P && P.type === 'choice'
+        ? P.options.filter(o => o.id !== 'pass')
+        : (kind === 'action' ? offeredActions(G(), s) : attackOptions(G(), s));
+
+    const rows = myShips().map(s => ({ s, options: optionsFor(s) }));
+    const live = rows.filter(r => r.options.length);
+    if (!live.length) {
+      return h('div', {},
+        h('p', { class: 'hint' }, kind === 'action'
+          ? 'No ship can act this round. Submit to move on.'
+          : 'No ship has a target in arc. Submit to hold fire.'));
+    }
+    for (const { s: ship } of live) if (!choices.some(c => c.kind === kind && c.shipId === ship.id)) choices.push({ kind, shipId: ship.id, option: 'pass' });
     const chosen = (id: string) => choices.find(c => c.kind === kind && c.shipId === id)?.option;
     const set = (id: string, option: string) => {
       // 'pass' is a real option on the prompt. Recording it explicitly is what stops the assistant
@@ -276,16 +293,22 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       choices.push({ kind, shipId: id, option });
       sfx.click(); render();
     };
-    return h('div', { class: 'choicerows' }, ...rows.map(({ s, options }) => h('div', { class: 'choicerow' },
+    const why = (s: ShipState) => kind === 'action'
+      ? (isStressed(s) ? 'Stressed — cannot act' : 'Nothing to do this round')
+      : 'No target in arc';
+
+    return h('div', { class: 'choicerows' }, ...rows.map(({ s, options }) => h('div', { class: `choicerow${options.length ? '' : ' idle'}` },
       h('div', { class: 'choicewho' }, h('b', {}, pilotDef(s).name), h('small', {}, ` ${shipDef(s).name}`)),
-      h('div', { class: 'choiceopts' },
-        ...options.map(o => h('button', {
-          class: chosen(s.id) === o.id ? 'primary' : (o.red ? 'danger' : ''),
-          onmouseenter: () => previewOption(s, o), onmouseleave: () => syncBoard(),
-          onclick: () => set(s.id, o.id),
-        }, label(o, kind))),
-        h('button', { class: chosen(s.id) === 'pass' ? 'primary' : 'ghostbtn', onclick: () => set(s.id, 'pass') },
-          kind === 'action' ? 'No action' : 'Hold fire')))));
+      options.length
+        ? h('div', { class: 'choiceopts' },
+          ...options.map(o => h('button', {
+            class: chosen(s.id) === o.id ? 'primary' : (o.red ? 'danger' : ''),
+            onmouseenter: () => previewOption(s, o), onmouseleave: () => syncBoard(),
+            onclick: () => set(s.id, o.id),
+          }, label(o, kind))),
+          h('button', { class: chosen(s.id) === 'pass' ? 'primary' : 'ghostbtn', onclick: () => set(s.id, 'pass') },
+            kind === 'action' ? 'No action' : 'Hold fire'))
+        : h('div', { class: 'choiceopts' }, h('span', { class: 'dim' }, why(s))))));
   }
 
   const label = (o: Option, kind: string) => {
