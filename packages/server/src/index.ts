@@ -9,9 +9,11 @@ import { deleteAccount, login, logout, register, setEmail, userFor } from './aut
 import { claimSeat, createMatch, getMatch, listMatches, syncMatch } from './matches';
 
 interface Env { MATCH: DurableObjectNamespace<Match>; holotable: D1Database }
+const RECENT = 400;
+
 interface Seat { token: string; name: string; squad: Squad | null; ready: boolean; user?: { id: string; username: string } | null; seen?: number }
 interface StoredPacket { round: number; stage: string; packet: TurnPacket }
-interface Stored { seats: Seat[]; game: GameState | null; code?: string; mode?: 'live' | 'correspondence'; log?: GameEvent[]; seed?: number; packets?: Record<string, StoredPacket> }
+interface Stored { seats: Seat[]; game: GameState | null; code?: string; mode?: 'live' | 'correspondence'; log?: GameEvent[]; logBase?: number; seed?: number; packets?: Record<string, StoredPacket> }
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'content-type, authorization', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...CORS } });
@@ -169,7 +171,7 @@ export class Match extends DurableObject<Env> {
         if (!me.squad) return json({ error: 'Choose a squadron first.' }, 400);
         me.ready = !!body.ready;
         const ev = this.tryStart();
-        if (ev.length) { d.log = ev; for (const s of d.seats) s.seen = 0; }
+        if (ev.length) { d.log = ev; d.logBase = 0; for (const s of d.seats) s.seen = 0; }
       }
 
       // ---- a turn packet
@@ -184,7 +186,12 @@ export class Match extends DurableObject<Env> {
         d.game = res.state;
         // Do NOT mark these seen: the results of your own turn — your movement, the exchange of
         // fire, who died — are exactly what you want to read when you next open the match.
-        d.log = [...(d.log ?? []), ...res.events].slice(-600);
+        // Keep the log bounded. `seen` indexes into it, so shift it by whatever falls off the front;
+        // logBase counts those so the client can place its "since your last turn" marker stably.
+        const full = [...(d.log ?? []), ...res.events];
+        const drop = Math.max(0, full.length - 600);
+        d.log = full.slice(drop);
+        if (drop) { d.logBase = (d.logBase ?? 0) + drop; for (const s of d.seats) s.seen = Math.max(0, (s.seen ?? 0) - drop); }
       }
       await this.save();
       await this.index();
@@ -227,6 +234,11 @@ export class Match extends DurableObject<Env> {
       waitingOn: st.player,
       yourTurn: seat >= 0 && st.player === seat,
       since: (d.log ?? []).slice(seen),
+      // The battle log: the recent tail, plus absolute positions so the client can mark where
+      // "since your last turn" begins even as the log grows underneath it.
+      recent: (d.log ?? []).slice(-RECENT),
+      recentFrom: (d.logBase ?? 0) + Math.max(0, (d.log ?? []).length - RECENT),
+      seenAt: (d.logBase ?? 0) + seen,
       user,
     };
   }

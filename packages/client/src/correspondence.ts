@@ -9,7 +9,7 @@ import {
 } from '@holotable/rules';
 import type { DialEntry, GameEvent, GameState, Option, PlayerId, Pose, ShipState } from '@holotable/rules';
 import type { GameScene } from './scene';
-import { dialWheel, h, shipCard } from './hud';
+import { dialWheel, h, maneuverName, shipCard } from './hud';
 import { getTurn, postTurn, serverUrl, socketAuth } from './account';
 import { allSquads } from './menu';
 import { sfx } from './audio';
@@ -19,6 +19,7 @@ interface TurnView {
   you: number; started: boolean; stage: string; waitingOn: number | null; yourTurn: boolean;
   seats: { name: string; squad: string | null; faction: string | null; ready: boolean }[];
   view: GameState | null; since: any[]; error?: string;
+  recent?: any[]; recentFrom?: number; seenAt?: number;
 }
 
 const STAGE_TITLE: Record<string, string> = {
@@ -37,9 +38,9 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   let placingIdx = 0;
   let squadPick = 0;
   let camDone = false;
-  // A read marks events seen server-side, so polling would wipe the summary a few seconds after it
-  // appeared. Hold on to it until the player actually takes their turn.
-  let summary: any[] = [];
+  // A read marks events seen server-side, so the next update would move the "since your last turn"
+  // marker to the end. Hold its position until the player actually takes their turn.
+  let markAt: number | null = null;
   let replaying = false, skipReplay = false;
 
   const root = h('div', { class: 'game corr' });
@@ -425,7 +426,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     else packet.choices = choices;
     try {
       const next = await postTurn(code, { packet });
-      deploy = {}; dials = {}; choices = []; selected = null; summary = [];
+      deploy = {}; dials = {}; choices = []; selected = null; markAt = null;
       sfx.confirm();
       busy = false;
       await replay(next, (next.since ?? []) as GameEvent[]);
@@ -436,6 +437,22 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   };
 
   // ---------- chrome ----------
+
+  /** The battle log: a rolling account of the match, with a marker where your last turn ended. */
+  function renderLog(t: TurnView) {
+    const events = t.recent ?? t.since ?? [];
+    const from = t.recentFrom ?? 0;
+    const pinned = els.log.scrollHeight - els.log.scrollTop - els.log.clientHeight < 24;
+    const out: string[] = ['<div class="loghead">Battle log</div>'];
+    events.forEach((e, i) => {
+      if (markAt !== null && from + i === markAt && i > 0) out.push('<div class="mark">Since your last turn</div>');
+      const line = narrate(e, t.view);
+      if (line) out.push(line);
+    });
+    if (out.length === 1) out.push('<div class="dim">Nothing has happened yet.</div>');
+    els.log.innerHTML = out.join('');
+    if (pinned) els.log.scrollTop = els.log.scrollHeight;
+  }
 
   function renderTop(t: TurnView) {
     els.top.replaceChildren(
@@ -483,9 +500,8 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
         })));
     }
 
-    if (t.since?.length) summary = t.since;
-    const lines = summary.length ? summarise(summary, t.view) : [];
-    els.log.innerHTML = lines.length ? `<div class="sep">Since your last turn</div>${lines.map(l => `<div>${l}</div>`).join('')}` : '';
+    if (t.since?.length && t.seenAt !== undefined) markAt = t.seenAt;
+    renderLog(t);
 
     if (!t.started) {
       els.centre.replaceChildren();
@@ -542,16 +558,38 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   void catchUp();    // ...and do not wait on the handshake to show something
 }
 
-/** A short, readable account of what the opponent did while you were away. */
-function summarise(events: any[], G: GameState | null): string[] {
-  const name = (id: string) => (G?.ships[id] ? pilotDef(G.ships[id]).name : id);
-  const out: string[] = [];
-  for (const e of events) {
-    if (e.t === 'attackResult') out.push(e.hit ? `<b>${name(e.attacker)}</b> hit <b>${name(e.defender)}</b> for ${e.hits + e.crits}` : `${name(e.attacker)} missed ${name(e.defender)}`);
-    else if (e.t === 'destroyed') out.push(`<span class="kill">${name(e.shipId)} was destroyed</span>`);
-    else if (e.t === 'removed' && e.reason === 'fled') out.push(`<span class="kill">${name(e.shipId)} fled the battlefield</span>`);
-    else if (e.t === 'crit') out.push(`<span class="warn">Critical: ${e.name}</span>`);
-    else if (e.t === 'obstacle') out.push(`${name(e.shipId)} clipped ${e.kind === 'gas' ? 'a gas cloud' : e.kind}`);
+/** One readable line for a game event, or null for the ones not worth reading. */
+function narrate(e: any, G: GameState | null): string | null {
+  const name = (id: string) => {
+    const s = G?.ships[id];
+    return s ? `<b class="p${s.owner}">${pilotDef(s).name}</b>` : id;
+  };
+  const div = (text: string, cls = '') => `<div${cls ? ` class="${cls}"` : ''}>${text}</div>`;
+  switch (e.t) {
+    case 'round': return div(`Round ${e.round}`, 'sep');
+    case 'reveal': {
+      const s = G?.ships[e.shipId];
+      const d = s ? dialFor(s).find(x => x.code === e.code) : null;
+      return div(`${name(e.shipId)} reveals <i>${d ? maneuverName(d) : e.code}</i>`, 'quiet');
+    }
+    case 'move': return e.kind === 'ion' ? div(`${name(e.shipId)} drifts on an ion maneuver`)
+      : !e.full && e.kind === 'maneuver' ? div(`${name(e.shipId)} could not complete the maneuver`) : null;
+    case 'bump': return div(`${name(e.shipId)} bumps ${name(e.otherId)}`, 'warn');
+    case 'obstacle': return div(`${name(e.shipId)} hits ${e.kind === 'gas' ? 'a gas cloud' : e.kind === 'debris' ? 'debris' : 'an asteroid'}`, 'warn');
+    case 'action': return div(`${name(e.shipId)}: ${e.label}`, 'quiet');
+    case 'ability': return div(`${name(e.shipId)} uses <i>${e.name}</i>`, 'quiet');
+    case 'token': return e.delta > 0 && ['stress', 'ion', 'strain', 'disarm'].includes(e.token) ? div(`${name(e.shipId)} gains ${e.delta} ${e.token}`, 'quiet') : null;
+    case 'attack': return div(`${name(e.attacker)} fires on ${name(e.defender)} · ${e.weaponName}, range ${e.range}${e.obstructed ? ', obstructed' : ''}`, 'atk');
+    case 'attackResult': return e.hit ? div(`&nbsp;&nbsp;Hit: ${e.hits} hit${e.hits === 1 ? '' : 's'}${e.crits ? `, ${e.crits} crit${e.crits === 1 ? '' : 's'}` : ''}`, 'hit') : div('&nbsp;&nbsp;Miss', 'quiet');
+    case 'damage': {
+      const parts = [e.shields ? `${e.shields} shield${e.shields > 1 ? 's' : ''}` : '', e.facedown + (e.faceup?.length ?? 0) ? `${e.facedown + (e.faceup?.length ?? 0)} hull` : ''].filter(Boolean);
+      return parts.length ? div(`&nbsp;&nbsp;${name(e.shipId)} loses ${parts.join(', ')}`) : null;
+    }
+    case 'crit': return div(`&nbsp;&nbsp;Critical: <i>${e.name}</i>`, 'warn');
+    case 'destroyed': return div(`${name(e.shipId)} is destroyed`, 'kill');
+    case 'removed': return e.reason === 'fled' ? div(`${name(e.shipId)} flees the battlefield`, 'kill') : null;
+    case 'gameOver': return div(e.winner === 'draw' ? 'The battle ends in a draw' : `${G?.players[e.winner]?.name ?? 'A player'} wins`, 'sep');
+    default: return null;
   }
-  return out.slice(-14);
 }
+
