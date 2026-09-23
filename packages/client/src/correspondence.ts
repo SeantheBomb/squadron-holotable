@@ -297,27 +297,61 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       ? (isStressed(s) ? 'Stressed — cannot act' : 'Nothing to do this round')
       : 'No target in arc';
 
-    return h('div', { class: 'choicerows' }, ...rows.map(({ s, options }) => h('div', { class: `choicerow${options.length ? '' : ' idle'}` },
-      h('div', { class: 'choicewho' }, h('b', {}, pilotDef(s).name), h('small', {}, ` ${shipDef(s).name}`)),
+    // One small card per ship in a strip that scrolls sideways, so the board stays in view.
+    // Hovering an order lights the ship on the board and its card in the side column.
+    return h('div', { class: 'ordercards' }, ...rows.map(({ s, options }) => h('div', {
+      class: `ordercard${options.length ? '' : ' idle'}${options.length && chosen(s.id) !== 'pass' ? ' set' : ''}`,
+      onmouseenter: () => { light(s.id); if (s.placed && !s.removed) { scene.clearOverlay(); scene.highlight(s.id, new Color3(0.4, 1, 0.8)); } },
+      onmouseleave: () => { unlight(); syncBoard(); },
+    },
+      h('div', { class: 'ordercard-head' }, h('span', { class: 'init' }, String(s.initiative)), h('b', {}, pilotDef(s).name)),
+      h('small', {}, shipDef(s).name),
       options.length
-        ? h('div', { class: 'choiceopts' },
-          ...options.map(o => h('button', {
-            class: chosen(s.id) === o.id ? 'primary' : (o.red ? 'danger' : ''),
-            onmouseenter: () => previewOption(s, o), onmouseleave: () => syncBoard(),
-            onclick: () => set(s.id, o.id),
-          }, label(o, kind))),
-          h('button', { class: chosen(s.id) === 'pass' ? 'primary' : 'ghostbtn', onclick: () => set(s.id, 'pass') },
-            kind === 'action' ? 'No action' : 'Hold fire'))
-        : h('div', { class: 'choiceopts' }, h('span', { class: 'dim' }, why(s))))));
+        ? h('div', { class: 'orderopts' },
+          ...options.map(o => {
+            const { icon, text, title } = chip(o, kind);
+            return h('button', {
+              class: `orderchip${chosen(s.id) === o.id ? ' on' : ''}${o.red ? ' red' : ''}`, title,
+              onmouseenter: (e: Event) => { e.stopPropagation(); previewOption(s, o); light(s.id, o.targetId); },
+              onmouseleave: () => { unlight(); light(s.id); syncBoard(); },
+              onclick: () => set(s.id, o.id),
+            }, h('span', { class: 'ico' }, icon), text);
+          }),
+          h('button', { class: `orderchip pass${chosen(s.id) === 'pass' ? ' on' : ''}`, onclick: () => set(s.id, 'pass') },
+            h('span', { class: 'ico' }, '✕'), kind === 'action' ? 'No action' : 'Hold fire'))
+        : h('div', { class: 'orderwhy' }, why(s)))));
   }
 
-  const label = (o: Option, kind: string) => {
+  /** Light the matching cards in the side columns (and bring them into view). */
+  const light = (...ids: (string | undefined)[]) => {
+    for (const id of ids) {
+      if (!id) continue;
+      const el = document.querySelector<HTMLElement>(`.corr .column [data-ship="${id}"]`);
+      if (el) { el.classList.add('lit'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+    }
+  };
+  const unlight = () => document.querySelectorAll('.corr .column .lit').forEach(el => el.classList.remove('lit'));
+
+  const ACTION_ICON: Record<string, string> = {
+    focus: '◉', evade: '⤳', calculate: '∑', lock: '⌖', barrelRoll: '⇆', boost: '⇡', reload: '↻',
+    rotate: '⟳', coordinate: '⇶', jam: '≋', reinforce: '▣', cloak: '◌', slam: '⇈', card: '✦',
+  };
+
+  /** A compact chip: an icon, a few words, and the full wording on hover. */
+  const chip = (o: Option, kind: string): { icon: string; text: string; title: string } => {
     if (kind === 'attack' && o.targetId) {
       const t = G().ships[o.targetId];
-      const w = o.weapon === 'primary' ? 'Primary' : (CONTENT.upgrades[G().ships[o.shipId!].upgrades[Number(o.weapon!.slice(2))]?.id]?.name ?? 'Weapon');
-      return `${w} → ${pilotDef(t).name} · R${o.range}${o.obstructed ? ' ·obs' : ''}`;
+      const primary = o.weapon === 'primary';
+      const up = primary ? null : CONTENT.upgrades[G().ships[o.shipId!].upgrades[Number(o.weapon!.slice(2))]?.id];
+      const wname = primary ? 'Primary' : (up?.name ?? 'Weapon');
+      const icon = primary ? '◎' : /turret/i.test(wname) ? '⟲' : /torpedo|missile|rocket/i.test(wname) ? '➹' : '✦';
+      return { icon, text: `${pilotDef(t).name} · R${o.range}${o.obstructed ? '·obs' : ''}`, title: `${wname} → ${pilotDef(t).name} at range ${o.range}${o.obstructed ? ' (obstructed)' : ''}` };
     }
-    return o.label;
+    const type = (o as any).action as string | undefined;
+    let text = o.label;
+    if (type === 'lock' && o.targetId) text = `Lock ${pilotDef(G().ships[o.targetId]).name}`;
+    else if (type === 'barrelRoll') text = o.label.replace(/^(Red )?Barrel Roll /, 'Roll ');
+    return { icon: ACTION_ICON[type ?? ''] ?? '•', text, title: o.label };
   };
 
   const previewOption = (s: ShipState, o: Option) => {
@@ -418,6 +452,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     if (!turn) { els.panel.replaceChildren(h('div', { class: 'waiting' }, 'Loading your turn…')); return; }
     const t = turn;
     document.title = t.yourTurn ? `● Your turn · ${pageTitle}` : pageTitle;
+    els.panel.classList.remove('strip');
 
     if (replaying) {
       els.centre.replaceChildren();
@@ -475,6 +510,18 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       : h('p', { class: 'hint' }, 'Nothing to decide.');
 
     // replaceChildren is native DOM and will not take a null, unlike our own h() helper.
+    const strip = t.stage === 'actions' || t.stage === 'attacks';
+    els.panel.classList.toggle('strip', strip);
+    if (strip) {
+      els.panel.replaceChildren(...[
+        h('div', { class: 'striphead' },
+          h('div', { class: 'title' }, STAGE_TITLE[t.stage] ?? t.stage),
+          error ? h('p', { class: 'err' }, error) : null,
+          h('button', { class: 'primary', disabled: busy || !ready(), onclick: submit }, busy ? 'Sending…' : 'Submit turn')),
+        body,
+      ].filter((n): n is HTMLElement => !!n));
+      return;
+    }
     els.panel.replaceChildren(...[
       h('div', { class: 'title' }, STAGE_TITLE[t.stage] ?? t.stage),
       body,
