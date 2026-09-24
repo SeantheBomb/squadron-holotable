@@ -8,6 +8,8 @@ import type { Session, Update } from './session';
 import { diceRow, dialWheel, h, maneuverName, shipCard } from './hud';
 import { settings, saveSettings } from './settings';
 import { setTension, setVolume, sfx, startDrone } from './audio';
+import { REPLAY_RATES, openReplay } from './replay';
+import { startRecording, type Recording } from './recorder';
 
 const PHASE_NAME: Record<string, string> = { setup: 'Deployment', planning: 'Planning', system: 'System', activation: 'Activation', engagement: 'Engagement', end: 'End Phase', over: 'Battle Over' };
 
@@ -32,6 +34,9 @@ export class Game {
   private shownPhase: string | null = null;
   private busySince = 0;
   private watchdog = 0;
+  /** Bumped when a replay seeks, so the animation in flight stops instead of finishing. */
+  private gen = 0;
+  private recording: Recording | null = null;
 
   constructor(private scene: GameScene, private session: Session, private ui: HTMLElement, private onExit: () => void) {
     this.root = h('div', { class: 'game' });
@@ -47,6 +52,15 @@ export class Game {
     scene.scene.onBeforeRenderObservable.add(() => this.updateLabels());
     scene.onTrouble = msg => { if (msg) this.toast(msg); };
     this.startWatchdog();
+    const rp = session.replay;
+    if (rp) {
+      this.root.classList.add('replaying');
+      rp.onSnap(u => this.snap(u));
+      rp.onChange(() => {
+        if (this.recording && rp.finished && !this.busy) { void this.finishRecording(); return; }
+        if (!this.busy) this.renderPrompt(); else this.renderReplayBar();
+      });
+    }
   }
 
   receive(u: Update) { this.queue.push(u); void this.pump(); }
@@ -127,7 +141,7 @@ export class Game {
    */
   private startWatchdog() {
     this.watchdog = setInterval(() => {
-      if (!this.busy || !this.busySince) return;
+      if (!this.busy || !this.busySince || this.scene.isPaused) return;
       if (Date.now() - this.busySince < 12000) return;
       this.busySince = 0;
       this.recover('Animation stalled — snapped to the current state.');
@@ -161,6 +175,20 @@ export class Game {
     this.busy = false;
     this.busySince = 0;
     this.render();
+    this.session.idle?.();
+  }
+
+  /** Replay seek: drop whatever is animating and show this state now. */
+  private snap(u: Update) {
+    this.gen++;
+    this.queue = [];
+    this.showDice = false;
+    this.logLines = []; this.els.log.innerHTML = '';
+    this.view = u.view;
+    this.scene.showGhost(null); this.scene.clearOverlay();
+    void this.scene.endAttack();
+    this.scene.sync(u.view);
+    this.render();
   }
 
   private async drain() {
@@ -170,7 +198,9 @@ export class Game {
       const first = !this.view;
       if (first) { this.view = u.view; this.scene.setViewer(this.session.viewer()); this.scene.sync(u.view); }
       this.hideInteractive();
-      for (const ev of u.events) await this.playEvent(ev, u.view);
+      const gen = this.gen;
+      for (const ev of u.events) { await this.playEvent(ev, u.view); if (gen !== this.gen) break; }
+      if (gen !== this.gen) continue;   // a replay seek replaced this update
       if (u.view.pending?.type !== 'choice' || !u.view.pending.kind.startsWith('modify')) { if (!u.view.attack) { this.showDice = false; await this.scene.endAttack(); } }
       this.view = u.view;
       this.scene.sync(u.view);
@@ -244,7 +274,9 @@ export class Game {
   private iControl(p: PlayerId) { return this.session.local.includes(p); }
 
   private hideInteractive() {
-    this.els.prompt.replaceChildren(); this.els.center.replaceChildren();
+    this.els.center.replaceChildren();
+    // In a replay the prompt area holds the playback controls, which must stay usable throughout.
+    if (this.session.replay) this.renderReplayBar(); else this.els.prompt.replaceChildren();
     this.scene.showGhost(null); this.scene.clearOverlay(); this.scene.showZones(false);
   }
 
@@ -263,16 +295,89 @@ export class Game {
       h('div', { class: 'phase' }, G.phase === 'over' && !this.busy ? 'Battle Over' : `Round ${Math.max(1, G.round)} of ${G.options.maxRounds} · ${PHASE_NAME[this.busy && this.shownPhase ? this.shownPhase : G.phase]}`),
       h('div', { class: 'tools' },
         btn('Tabletop Truth', 'Show bases, templates and firing arcs', () => (s.truth = !s.truth), s.truth),
-        btn(`Assist: ${s.assist ? 'On' : 'Pure'}`, 'Ghost preview of your own maneuver while planning', () => (s.assist = !s.assist), s.assist),
+        this.session.replay ? null : btn(`Assist: ${s.assist ? 'On' : 'Pure'}`, 'Ghost preview of your own maneuver while planning', () => (s.assist = !s.assist), s.assist),
         btn(`Action cam: ${s.actionCam}`, 'Cinematic attack camera frequency', () => (s.actionCam = s.actionCam === 'off' ? 'sometimes' : s.actionCam === 'sometimes' ? 'always' : 'off')),
-        btn(`${s.speed}×`, 'Animation speed', () => (s.speed = s.speed === 1 ? 2 : 1)),
+        this.session.replay ? null : btn(`${s.speed}×`, 'Animation speed', () => (s.speed = s.speed === 1 ? 2 : 1)),
         btn(s.volume > 0 ? 'Sound on' : 'Muted', 'Toggle sound', () => { s.volume = s.volume > 0 ? 0 : 0.6; setVolume(); }, s.volume > 0),
-        h('button', { class: 'chip', title: 'Redraw from the current game state', onclick: () => { this.session.resync?.(); this.recover('Resynced.'); } }, 'Resync'),
-        h('button', { class: 'chip', onclick: () => { if (this.view.phase === 'over' || confirm('Leave this battle?')) this.exit(); } }, 'Exit'),
+        this.session.replay ? null : h('button', { class: 'chip', title: 'Redraw from the current game state', onclick: () => { this.session.resync?.(); this.recover('Resynced.'); } }, 'Resync'),
+        h('button', { class: 'chip', onclick: () => { if (this.session.replay || this.view.phase === 'over' || confirm('Leave this battle?')) this.exit(); } }, 'Exit'),
       ));
   }
 
-  private exit() { clearInterval(this.watchdog); this.session.dispose(); this.scene.reset(); this.labels.forEach(l => l.remove()); this.onExit(); }
+  private exit(toMenu = true) {
+    clearInterval(this.watchdog);
+    this.recording?.cancel(); this.recording = null;
+    this.gen++; this.queue = [];
+    this.session.dispose(); this.scene.reset(); this.labels.forEach(l => l.remove());
+    if (toMenu) this.onExit();
+  }
+
+  // ---------- replay controls ----------
+
+  private renderReplayBar() {
+    const rp = this.session.replay; if (!rp) return;
+    const G = this.view;
+    const el = this.els.prompt;
+    if (this.recording) {
+      el.replaceChildren(h('div', { class: 'replaybar recording' },
+        h('div', { class: 'replayrow' },
+          h('span', { class: 'recdot' }), h('span', {}, `Recording · ${this.recording.elapsed()}`),
+          h('button', { class: 'chip', onclick: () => void this.finishRecording() }, 'Stop and save'))));
+      return;
+    }
+    const rounds = rp.rounds();
+    const here = rounds.filter(r => r.step < rp.position).pop()?.round ?? 0;
+    const pct = Math.round((rp.position / Math.max(1, rp.total)) * 100);
+    const select = h('select', { class: 'chip', title: 'Jump to a round', onchange: (e: Event) => rp.seek(Number((e.target as HTMLSelectElement).value)) },
+      h('option', { value: '0' }, 'Deployment'),
+      ...rounds.map(r => h('option', { value: String(r.step), ...(r.round === here ? { selected: 'selected' } : {}) }, `Round ${r.round}`)));
+    el.replaceChildren(h('div', { class: 'replaybar' },
+      h('div', { class: 'replayrow' },
+        h('span', { class: 'title' }, 'Replay'),
+        h('button', { class: 'chip', title: 'From the start', onclick: () => rp.restart() }, '⏮'),
+        h('button', { class: 'chip on', title: rp.playing ? 'Pause' : 'Play', onclick: () => rp.setPlaying(!rp.playing) }, rp.playing ? '❚❚ Pause' : '▶ Play'),
+        ...REPLAY_RATES.map(r => h('button', { class: `chip${rp.rate === r ? ' on' : ''}`, onclick: () => rp.setRate(r) }, `${r}×`)),
+        rounds.length ? select : null,
+        h('button', { class: 'chip', title: 'Swap which side is shown on the left', onclick: () => { rp.setPerspective((1 - rp.perspective) as PlayerId); this.render(); } }, `View: ${G.players[rp.perspective].name}`),
+        h('button', { class: 'chip rec', title: 'Record the replay from the start and save it as a video file', onclick: () => void this.beginRecording() }, '● Record video')),
+      h('div', { class: 'replayprogress' }, h('i', { style: `width:${pct}%` })),
+      rp.faithful ? null : h('div', { class: 'hint' }, 'The rules have changed since this match was played, so this shows the recorded events. Jumping to a round is unavailable.')));
+  }
+
+  private recTicker = 0;
+
+  private async beginRecording() {
+    const rp = this.session.replay; if (!rp) return;
+    try {
+      this.recording = await startRecording(this.scene, this.root, () => this.captionFor());
+    } catch (e: any) { this.toast(e?.message ?? 'Recording could not start.'); return; }
+    this.recording.onEnded(() => void this.finishRecording());
+    this.recTicker = setInterval(() => this.renderReplayBar(), 1000) as unknown as number;
+    rp.setPlaying(true);
+    rp.restart();
+  }
+
+  private async finishRecording() {
+    const rec = this.recording; if (!rec) return;
+    this.recording = null;
+    clearInterval(this.recTicker);
+    const G = this.view;
+    const saved = await rec.save(`holotable-${G.players[0].name}-vs-${G.players[1].name}`.replace(/[^a-z0-9-]+/gi, '_'));
+    this.toast(saved ? `Video saved (${saved}).` : 'Nothing was recorded.');
+    this.render();
+  }
+
+  /** What the canvas-only recording burns into the frame, since the page's HUD is not in it. */
+  private captionFor(): { top: string; bottom: string } {
+    const G = this.view;
+    if (!G) return { top: '', bottom: '' };
+    const tmp = document.createElement('div');
+    tmp.innerHTML = this.logLines[this.logLines.length - 1] ?? '';
+    return {
+      top: `${G.players[0].name} ${G.players[0].score}  —  ${G.players[1].score} ${G.players[1].name}   ·   Round ${Math.max(1, G.round)} · ${PHASE_NAME[this.shownPhase ?? G.phase] ?? ''}`,
+      bottom: (tmp.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    };
+  }
 
   private renderColumns() {
     const G = this.view, me = this.me();
@@ -289,10 +394,32 @@ export class Game {
   private renderPrompt() {
     const G = this.view, P = G.pending, el = this.els.prompt;
     el.replaceChildren(); this.els.center.replaceChildren();
+    if (this.session.replay) {
+      this.renderReplayBar();
+      if (G.phase === 'over' && !this.busy && !this.recording) {
+        const w = G.winner;
+        this.els.center.append(h('div', { class: 'panel over' },
+          h('h1', {}, w === 'draw' ? 'Stalemate' : `${G.players[w as PlayerId].name} wins`),
+          h('p', {}, `${G.players[0].name} ${G.players[0].score} — ${G.players[1].score} ${G.players[1].name}`),
+          h('div', { class: 'rowgap' },
+            h('button', { class: 'primary', onclick: () => this.session.replay!.restart() }, 'Watch again'),
+            h('button', { onclick: () => this.exit() }, 'Done'))));
+      }
+      return;
+    }
     if (G.phase === 'over') {
       const w = G.winner;
       const title = w === 'draw' ? 'Stalemate' : this.iControl(w as PlayerId) && this.session.local.length === 1 ? 'Victory' : this.session.local.length === 2 ? `${G.players[w as PlayerId].name} wins` : 'Defeat';
-      this.els.center.append(h('div', { class: 'panel over' }, h('h1', {}, title), h('p', {}, `${G.players[0].name} ${G.players[0].score} — ${G.players[1].score} ${G.players[1].name}`), h('button', { class: 'primary', onclick: () => this.exit() }, 'Return to hangar')));
+      const watch = h('button', {
+        onclick: async () => {
+          (watch as HTMLButtonElement).disabled = true; watch.textContent = 'Loading…';
+          const r = await this.session.record?.();
+          if (!r) { watch.textContent = 'Replay unavailable'; return; }
+          this.exit(false); openReplay(r);
+        },
+      }, 'Watch replay');
+      this.els.center.append(h('div', { class: 'panel over' }, h('h1', {}, title), h('p', {}, `${G.players[0].name} ${G.players[0].score} — ${G.players[1].score} ${G.players[1].name}`),
+        h('div', { class: 'rowgap' }, h('button', { class: 'primary', onclick: () => this.exit() }, 'Return to hangar'), this.session.record ? watch : null)));
       return;
     }
     if (!P) return;

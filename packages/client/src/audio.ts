@@ -86,3 +86,12 @@ export function setTension(t: number) {
   ((droneGain as any)._filter as BiquadFilterNode).frequency.linearRampToValueAtTime(300 + t * 900, ctx.currentTime + 1.5);
   droneGain.gain.linearRampToValueAtTime(0.04 + t * 0.04, ctx.currentTime + 1.5);
 }
+
+/** A live copy of everything the game plays, for recording. Null if audio never started. */
+export function audioStream(): MediaStream | null {
+  const c = ac();
+  if (!c || !master) return null;
+  const dest = c.createMediaStreamDestination();
+  master.connect(dest);
+  return dest.stream;
+}

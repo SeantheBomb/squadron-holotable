@@ -1,8 +1,9 @@
 // A Session hides where the rules run: locally (hotseat / vs bot) or on the match server.
-import { applyCommand, createGame, viewFor } from '@holotable/rules';
-import type { Command, GameEvent, GameState, PlayerId, Squad } from '@holotable/rules';
+import { applyCommand, createGame, newRecord, recordStep, viewFor } from '@holotable/rules';
+import type { Command, GameEvent, GameState, MatchRecord, PlayerId, Squad } from '@holotable/rules';
 import type { BotOptions } from '@holotable/bot';
-import { socketAuth } from './account';
+import { getReplay, socketAuth } from './account';
+import { saveToArchive } from './archive';
 
 export interface Update { view: GameState; events: GameEvent[] }
 export interface LobbySeat { name: string; squad: string | null; faction: string | null; ready: boolean }
@@ -19,6 +20,12 @@ export interface Session {
   onError(fn: (msg: string) => void): void;
   /** Ask the transport to re-send authoritative state (online only). */
   resync?(): void;
+  /** The full record of the match, once it is over. */
+  record?(): Promise<MatchRecord | null>;
+  /** Present when this is a replay rather than a live match. */
+  replay?: import('./replay').ReplaySession;
+  /** The Game finished animating everything it was given. */
+  idle?(): void;
   dispose(): void;
 }
 
@@ -30,11 +37,15 @@ export class LocalSession implements Session {
   private worker: Worker | null = null;
   private seat: PlayerId = 0;
   private botBusy = false;
+  private rec: MatchRecord;
+  private readonly archiveId = crypto.randomUUID();
 
   constructor(squads: [Squad, Squad], names: [string, string], bot: BotOptions | null) {
     this.local = bot ? [0] : [0, 1];
-    const g = createGame(squads, names, (Math.random() * 2 ** 31) | 0);
+    const seed = (Math.random() * 2 ** 31) | 0;
+    const g = createGame(squads, names, seed);
     this.G = g.state;
+    this.rec = { ...newRecord(squads, names, seed, {}, g.events), mode: 'local' };
     if (bot) {
       this.worker = new Worker(new URL('./botWorker.ts', import.meta.url), { type: 'module' });
       this.worker.postMessage({ type: 'init', player: 1, options: bot });
@@ -61,6 +72,8 @@ export class LocalSession implements Session {
     try {
       const res = applyCommand(this.G, cmd);
       this.G = res.state;
+      recordStep(this.rec, cmd, res.events, res.state);
+      if (res.state.phase === 'over') void saveToArchive(this.archiveId, this.rec);
       this.emit(res.events);
     } catch (e: any) { for (const fn of this.errors) fn(e?.message ?? String(e)); }
     this.pokeBot();
@@ -77,6 +90,7 @@ export class LocalSession implements Session {
   }
 
   send(cmd: Command) { this.apply(cmd); }
+  record() { return Promise.resolve(this.G.phase === 'over' ? this.rec : null); }
   onUpdate(fn: Listener) { this.listeners.push(fn); }
   onError(fn: (m: string) => void) { this.errors.push(fn); }
   dispose() { this.worker?.terminate(); }
@@ -89,6 +103,7 @@ export class RemoteSession implements Session {
   private errors: ((m: string) => void)[] = [];
   private lobbyFns: ((l: LobbyState) => void)[] = [];
   private you: PlayerId = 0;
+  private seatToken: string;
   lobby: LobbyState | null = null;
 
   constructor(serverUrl: string, readonly code: string, name: string, squad: Squad) {
@@ -96,6 +111,7 @@ export class RemoteSession implements Session {
     const tokenKey = `holotable-token-${code}`;
     let token = localStorage.getItem(tokenKey);
     if (!token) { token = crypto.randomUUID(); localStorage.setItem(tokenKey, token); }
+    this.seatToken = token;
     this.ws = new WebSocket(`${serverUrl.replace(/^http/, 'ws')}/api/rooms/${code}/ws${socketAuth()}`);
     this.ws.onopen = () => this.ws.send(JSON.stringify({ type: 'join', token, name, squad }));
     this.ws.onmessage = e => {
@@ -119,6 +135,13 @@ export class RemoteSession implements Session {
   viewer() { return this.you; }
   send(cmd: Command) { this.ws.send(JSON.stringify({ type: 'cmd', command: cmd })); }
   resync() { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: 'resync' })); }
+  async record() {
+    try {
+      const r = await getReplay(this.code, this.seatToken);
+      void saveToArchive(this.code, r);
+      return r;
+    } catch { return null; }
+  }
   onUpdate(fn: Listener) { this.listeners.push(fn); }
   onError(fn: (m: string) => void) { this.errors.push(fn); }
   dispose() { this.ws.onclose = null; this.ws.close(); }

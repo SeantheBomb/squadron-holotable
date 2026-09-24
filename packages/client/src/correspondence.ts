@@ -10,7 +10,9 @@ import {
 import type { DialEntry, GameEvent, GameState, Option, PlayerId, Pose, ShipState } from '@holotable/rules';
 import type { GameScene } from './scene';
 import { dialWheel, h, maneuverName, shipCard } from './hud';
-import { getTurn, postTurn, serverUrl, socketAuth } from './account';
+import { getReplay, getTurn, postTurn, serverUrl, socketAuth } from './account';
+import { saveToArchive } from './archive';
+import { openReplay } from './replay';
 import { allSquads } from './menu';
 import { sfx } from './audio';
 import { settings } from './settings';
@@ -506,6 +508,28 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     if (!t.started) {
       els.centre.replaceChildren();
       els.panel.replaceChildren(h('div', { class: 'title' }, `Room ${code}`), lobbyPanel());
+      return;
+    }
+
+    if (t.view?.phase === 'over') {
+      const G = t.view;
+      const w = G.winner;
+      const watch = h('button', {
+        class: 'primary',
+        onclick: async () => {
+          (watch as HTMLButtonElement).disabled = true; watch.textContent = 'Loading…';
+          try {
+            const r = await getReplay(code);
+            void saveToArchive(code, r);
+            dispose(); openReplay(r);
+          } catch (e: any) { watch.textContent = e?.message ?? 'Replay unavailable'; }
+        },
+      }, 'Watch replay');
+      els.centre.replaceChildren();
+      els.panel.replaceChildren(
+        h('div', { class: 'title' }, w === 'draw' ? 'Stalemate' : w === t.you ? 'Victory' : 'Defeat'),
+        h('p', { class: 'hint' }, `${G.players[0].name} ${G.players[0].score} — ${G.players[1].score} ${G.players[1].name}`),
+        h('div', { class: 'rowgap' }, watch, h('button', { onclick: () => { dispose(); onExit(); } }, 'Back')));
       return;
     }
 

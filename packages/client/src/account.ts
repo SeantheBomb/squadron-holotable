@@ -87,3 +87,7 @@ export const postTurn = (code: string, body: unknown) => api<any>(`/api/rooms/${
 
 /** Sockets carry no headers we control, so the session rides along as a query parameter. */
 export const socketAuth = () => (token ? `?t=${encodeURIComponent(token)}` : '');
+
+/** The full record of a finished match. `seat` is the seat token guests hold for live rooms. */
+export const getReplay = (code: string, seat?: string | null) =>
+  api<import('@holotable/rules').MatchRecord>(`/api/rooms/${code}/replay${seat ? `?seat=${encodeURIComponent(seat)}` : ''}`);

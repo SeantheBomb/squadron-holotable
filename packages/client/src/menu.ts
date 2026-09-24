@@ -7,6 +7,8 @@ import { h } from './hud';
 import { activePack, importXws } from './pack';
 import { sfx } from './audio';
 import * as Acct from './account';
+import { listArchive, removeFromArchive, saveToArchive } from './archive';
+import { openReplay } from './replay';
 
 export type Launch =
   | { mode: 'correspondence'; code: string }
@@ -186,12 +188,15 @@ function accountBar(ui: HTMLElement, back: () => void): HTMLElement {
   if (!Acct.signedIn()) {
     return h('div', { class: 'acctbar' },
       h('span', { class: 'dim' }, 'Playing as a guest'),
-      h('button', { class: 'chip', onclick: () => showAccount(ui, back) }, 'Sign in / create account'));
+      h('div', { class: 'rowgap' },
+        h('button', { class: 'chip', onclick: () => showReplays(ui, back) }, 'Replays'),
+        h('button', { class: 'chip', onclick: () => showAccount(ui, back) }, 'Sign in / create account')));
   }
   return h('div', { class: 'acctbar' },
     h('span', {}, 'Signed in as ', h('b', {}, Acct.account!.username)),
     h('div', { class: 'rowgap' },
       h('button', { class: 'chip', onclick: () => showGames(ui, back, c => location.assign(`?corr=${c}`)) }, 'My games'),
+      h('button', { class: 'chip', onclick: () => showReplays(ui, back) }, 'Replays'),
       h('button', { class: 'chip', onclick: () => showAccount(ui, back) }, 'Account')));
 }
 
@@ -284,7 +289,9 @@ export function showGames(ui: HTMLElement, back: () => void, onOpen?: (code: str
               m.status === 'over' ? 'Finished'
                 : m.status === 'lobby' ? (them === 'waiting for an opponent' ? 'Waiting for an opponent' : 'Getting ready')
                 : m.yourTurn ? 'YOUR TURN' : 'Their turn'),
-            h('button', { class: m.yourTurn ? 'primary' : '', onclick: () => onOpen?.(m.code) }, m.status === 'over' ? 'Review' : 'Open'));
+            h('div', { class: 'rowgap' },
+              m.status === 'over' ? h('button', { class: 'primary', onclick: () => void watchOnline(m.code) }, 'Watch') : null,
+              h('button', { class: m.yourTurn ? 'primary' : '', onclick: () => onOpen?.(m.code) }, m.status === 'over' ? 'Review' : 'Open')));
         });
 
     ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card wide' },
@@ -341,4 +348,61 @@ function showBuilder(ui: HTMLElement, back: () => void) {
         h('button', { onclick: back }, 'Cancel')))));
   };
   render();
+}
+
+/** Fetch a finished online match and play it back, keeping a copy in this browser. */
+async function watchOnline(code: string) {
+  try {
+    const r = await Acct.getReplay(code);
+    void saveToArchive(code, r);
+    openReplay(r);
+  } catch (e: any) { alert(e?.message ?? 'Replay unavailable.'); }
+}
+
+/** Every finished match this browser has kept, plus finished online matches on this account. */
+export function showReplays(ui: HTMLElement, back: () => void) {
+  type Row = { id: string; title: string; detail: string; when: number; local: boolean; watch: () => void };
+  let rows: Row[] | null = null;
+  const when = (t: number) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const render = () => {
+    const list = rows === null ? [h('p', { class: 'hint' }, 'Loading…')]
+      : !rows.length ? [h('p', { class: 'hint' }, 'No finished matches yet. Finish a battle and it will be here to watch back.')]
+      : rows.map(r => h('div', { class: 'gamerow' },
+        h('div', {}, h('b', {}, r.title), h('small', {}, ` ${r.detail} · ${when(r.when)}`)),
+        h('div', { class: 'rowgap' },
+          h('button', { class: 'primary', onclick: r.watch }, 'Watch'),
+          r.local ? h('button', { class: 'chip', title: 'Remove from this browser', onclick: async () => { await removeFromArchive(r.id); void load(); } }, '✕') : null)));
+    ui.replaceChildren(h('div', { class: 'menu' }, h('div', { class: 'menu-card wide' },
+      h('h2', {}, 'Replays'),
+      h('p', { class: 'hint' }, 'Watch any finished match back, and save it as a video from the replay controls.'),
+      h('div', { class: 'gamelist' }, ...list),
+      h('div', { class: 'rowgap' }, h('button', { onclick: back }, 'Back')))));
+  };
+
+  const load = async () => {
+    const out: Row[] = [];
+    for (const e of await listArchive()) {
+      const r = e.record;
+      const result = r.winner === 'draw' ? 'draw' : r.winner != null ? `${r.names[r.winner]} won` : 'unfinished';
+      out.push({
+        id: e.id, local: true, when: r.finishedAt ?? e.savedAt,
+        title: `${r.names[0]} vs ${r.names[1]}`,
+        detail: `${r.mode === 'local' ? 'on this device' : r.mode ?? 'online'} · ${result}${r.scores ? ` ${r.scores[0]}–${r.scores[1]}` : ''}`,
+        watch: () => openReplay(r),
+      });
+    }
+    if (Acct.signedIn()) {
+      try {
+        for (const m of await Acct.myMatches()) {
+          if (m.status !== 'over' || out.some(o => o.id === m.code)) continue;
+          out.push({ id: m.code, local: false, when: m.updated_at, title: `${m.p0_name} vs ${m.p1_name}`, detail: m.mode, watch: () => void watchOnline(m.code) });
+        }
+      } catch { /* offline: the local archive is still useful */ }
+    }
+    rows = out.sort((a, b) => b.when - a.when);
+    render();
+  };
+  render();
+  void load();
 }

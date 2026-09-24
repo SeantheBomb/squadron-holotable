@@ -223,3 +223,15 @@ hr { border: none; border-top: 1px solid rgba(94, 200, 255, 0.18); margin: 18px 
 .log .quiet { opacity: 0.62; }
 .log b.p0, .log b.p1 { font-weight: 600; }
 @media (max-width: 1100px) { .corr .log { width: 200px; } }
+
+/* replay controls */
+.game.replaying .prompt { width: auto; min-width: min(640px, calc(100% - 540px)); }
+.replaybar { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.replayrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.replayrow .title { margin-right: 6px; }
+.replayrow select.chip { background: var(--bg); color: inherit; border: 1px solid var(--line); }
+.replayrow .chip.rec { color: #ff8a80; border-color: rgba(255, 110, 100, 0.5); }
+.replayprogress { height: 3px; background: rgba(94, 200, 255, 0.15); }
+.replayprogress i { display: block; height: 100%; background: var(--holo); transition: width 0.3s; }
+.replaybar.recording .replayrow { font-size: 0.8rem; letter-spacing: 0.08em; }
+.recdot { width: 9px; height: 9px; border-radius: 50%; background: #ff4d4d; box-shadow: 0 0 10px #ff4d4d; animation: livepulse 1.2s ease-in-out infinite; }

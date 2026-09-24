@@ -1,10 +1,10 @@
 // Authoritative multiplayer: one Durable Object per match runs the rules engine, rolls the dice and
 // holds hidden dials. Clients only ever receive redacted views.
 import { DurableObject } from 'cloudflare:workers';
-import { applyCommand, createGame, validateSquad, viewFor } from '@holotable/rules';
+import { applyCommand, createGame, newRecord, recordStep, validateSquad, viewFor } from '@holotable/rules';
 import { runForward } from '@holotable/bot';
 import type { TurnPacket } from '@holotable/bot';
-import type { Command, GameEvent, GameState, PlayerId, Squad } from '@holotable/rules';
+import type { Command, GameEvent, GameState, MatchRecord, PlayerId, Squad } from '@holotable/rules';
 import { deleteAccount, login, logout, register, setEmail, userFor } from './auth';
 import { claimSeat, createMatch, getMatch, listMatches, syncMatch } from './matches';
 
@@ -96,6 +96,18 @@ export default {
         );
       }
 
+      const rp = path.match(/^\/api\/rooms\/([A-Z0-9]{5})\/replay$/);
+      if (rp) {
+        // Account holders are matched by user; guests from live rooms by the seat token they hold.
+        const user = await userFor(env, req);
+        const seat = url.searchParams.get('seat') ?? '';
+        if (!user && !seat) return json({ error: 'Sign in first.' }, 401);
+        const head = new Headers();
+        head.set('X-User', user ? JSON.stringify(user) : '');
+        head.set('X-Seat', seat);
+        return env.MATCH.get(env.MATCH.idFromName(rp[1])).fetch(new Request(`https://do/replay/${rp[1]}`, { headers: head }));
+      }
+
       const m = path.match(/^\/api\/rooms\/([A-Z0-9]{5})\/ws$/);
       if (m) {
         // The socket carries no headers we control, so identity is passed as a query parameter and
@@ -120,11 +132,43 @@ export class Match extends DurableObject<Env> {
   private async load(): Promise<Stored> {
     return (this.data ??= (await this.ctx.storage.get<Stored>('match')) ?? { seats: [], game: null });
   }
-  private async save() { await this.ctx.storage.put('match', this.data); }
+  private async save() {
+    await this.ctx.storage.put('match', this.data);
+    if (this.historyDirty && this.history) { await this.ctx.storage.put('history', this.history); this.historyDirty = false; }
+  }
+
+  // ---------- match record, for watching it back ----------
+  // Kept under its own key: the whole match (setup, every command, every event) runs to ~100 KB,
+  // and nothing on the hot path needs to read it.
+  private history: MatchRecord | null = null;
+  private historyDirty = false;
+  private async loadHistory(): Promise<MatchRecord | null> {
+    return (this.history ??= (await this.ctx.storage.get<MatchRecord>('history')) ?? null);
+  }
+  private async record(steps: { command: Command; events: GameEvent[]; state: GameState }[]) {
+    const h = await this.loadHistory();
+    if (!h) return;                       // matches started before recording existed
+    for (const st of steps) recordStep(h, st.command, st.events, st.state);
+    this.historyDirty = true;
+  }
+
+  /** The full record, for the two players, once the match is over. */
+  private async replay(req: Request): Promise<Response> {
+    const d = await this.load();
+    const user = JSON.parse(req.headers.get('X-User') || 'null');
+    const seat = req.headers.get('X-Seat') || '';
+    const player = d.seats.some(s => (user && s.user?.id === user.id) || (seat && s.token === seat));
+    if (!player) return json({ error: 'Only the players can watch this match back.' }, 403);
+    if (!d.game || d.game.phase !== 'over') return json({ error: 'The match is not over yet.' }, 409);
+    const h = await this.loadHistory();
+    if (!h) return json({ error: 'This match was played before replays were recorded.' }, 404);
+    return json(h);
+  }
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname.startsWith('/turn/')) return this.turn(req, url.pathname.split('/')[2] ?? '');
+    if (url.pathname.startsWith('/replay/')) return this.replay(req);
     if (req.headers.get('Upgrade') !== 'websocket') return json({ error: 'expected websocket' }, 426);
     const d = await this.load();
     d.code ??= new URL(req.url).pathname.split('/')[3] ?? '';
@@ -182,8 +226,14 @@ export class Match extends DurableObject<Env> {
         // stage (deployment and engagement both do), and nobody should be asked twice for one sitting.
         d.packets ??= {};
         d.packets[String(seat)] = { round: d.game.round, stage: before.stage, packet: { ...(body.packet as TurnPacket), player: seat as PlayerId, stage: before.stage } };
-        const res = runForward(d.game, this.livePackets(), (st, c) => applyCommand(st, c), d.seed);
+        const steps: { command: Command; events: GameEvent[]; state: GameState }[] = [];
+        const res = runForward(d.game, this.livePackets(), (st, c) => {
+          const r = applyCommand(st, c);
+          steps.push({ command: c, events: r.events, state: r.state });
+          return r;
+        }, d.seed);
         d.game = res.state;
+        await this.record(steps);
         // Do NOT mark these seen: the results of your own turn — your movement, the exchange of
         // fire, who died — are exactly what you want to read when you next open the match.
         // Keep the log bounded. `seen` indexes into it, so shift it by whatever falls off the front;
@@ -294,8 +344,13 @@ export class Match extends DurableObject<Env> {
     if (d.game || d.seats.length < 2) return [];
     if (!d.seats.every(s => s.squad && s.ready && !validateSquad(s.squad).length)) return [];
     const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    const g = createGame([d.seats[0].squad!, d.seats[1].squad!], [d.seats[0].name, d.seats[1].name], seed, d.mode === 'correspondence' ? { variant: 'correspondence' } : {});
+    const squads: [Squad, Squad] = [d.seats[0].squad!, d.seats[1].squad!];
+    const names: [string, string] = [d.seats[0].name, d.seats[1].name];
+    const options = d.mode === 'correspondence' ? { variant: 'correspondence' as const } : {};
+    const g = createGame(squads, names, seed, options);
     d.game = g.state;
+    this.history = { ...newRecord(squads, names, seed, options, g.events), mode: d.mode ?? 'live' };
+    this.historyDirty = true;
     return g.events;
   }
 
@@ -372,6 +427,7 @@ export class Match extends DurableObject<Env> {
       try {
         const res = applyCommand(d.game, cmd);
         d.game = res.state;
+        await this.record([{ command: cmd, events: res.events, state: res.state }]);
         await this.save();
         await this.index();
         this.push(res.events);

@@ -447,7 +447,8 @@ export class GameScene {
   private tween(ms: number, step: (t: number) => void): Promise<void> {
     const dur = Math.max(1, ms / settings.speed);
     return new Promise(resolve => {
-      const start = performance.now();
+      // Progress runs on the scene clock, which a replay can pause or speed up.
+      const start = this.clock();
       let done = false;
       const finish = (snap: boolean) => {
         if (done) return;
@@ -458,13 +459,30 @@ export class GameScene {
         resolve();
       };
       const obs = this.scene.onBeforeRenderObservable.add(() => {
-        const raw = Math.min(1, (performance.now() - start) / dur);
+        const raw = Math.min(1, (this.clock() - start) / dur);
         step(raw);
         if (raw >= 1) finish(false);
       });
-      const timer = setTimeout(() => finish(true), dur + 250);
+      // Paused is not stalled: keep waiting rather than snapping to the end.
+      const arm = (): number => setTimeout(() => (this.paused ? (timer = arm()) : finish(true)), dur / this.rate + 250) as unknown as number;
+      let timer = arm();
     });
   }
+
+  // ---------- replay clock ----------
+  /** Playback speed multiplier on top of the player's own animation speed. */
+  rate = 1;
+  private paused = false;
+  private vclock = 0;
+  private wall = performance.now();
+  private clock(): number {
+    const now = performance.now();
+    if (!this.paused) this.vclock += (now - this.wall) * this.rate;
+    this.wall = now;
+    return this.vclock;
+  }
+  setPaused(on: boolean) { this.clock(); this.paused = on; }
+  get isPaused() { return this.paused; }
   wait(ms: number) { return this.tween(ms, () => {}); }
 
   private tweenCamera(to: { alpha?: number; beta?: number; radius?: number; target?: Vector3 }, ms: number): Promise<void> {

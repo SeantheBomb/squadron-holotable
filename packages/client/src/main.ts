@@ -5,6 +5,7 @@ import { Launch, showLobby, showMenu } from './menu';
 import { showCorrespondence } from './correspondence';
 import { loadPack } from './pack';
 import { restore } from './account';
+import { ReplaySession, setReplayOpener } from './replay';
 
 const canvas = document.getElementById('scene') as HTMLCanvasElement;
 const ui = document.getElementById('ui')!;
@@ -32,6 +33,11 @@ function start(l: Launch) {
 }
 
 function menu() { scene.setHolo(true); showMenu(ui, start); }
+
+setReplayOpener(record => {
+  scene.reset();
+  new Game(scene, new ReplaySession(record, scene), ui, menu);
+});
 
 const photo = (import.meta as any).env?.DEV ? new URLSearchParams(location.search).get('photo') : null;
 const deepLink = new URLSearchParams(location.search).get('corr');
