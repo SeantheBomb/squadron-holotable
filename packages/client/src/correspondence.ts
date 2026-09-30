@@ -44,6 +44,9 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   // marker to the end. Hold its position until the player actually takes their turn.
   let markAt: number | null = null;
   let replaying = false, skipReplay = false;
+  // An opponent's move that arrived while the match was open, waiting for the player to watch it.
+  let held: TurnView | null = null, loaded = false;
+  const heldEl = h('div', { class: 'heldwrap' });
 
   const root = h('div', { class: 'game corr' });
   const els = {
@@ -117,8 +120,40 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
       const next = await getTurn(code);
       if (disposed) return;
       if (!wasMine && next.yourTurn) announce();
-      await replay(next, (next.since ?? []) as GameEvent[]);
+      const events = (next.since ?? []) as GameEvent[];
+      // Opening the match plays straight through. Once it is open, a move the opponent makes waits
+      // behind a notice so it plays when you are ready to watch it, not while you are mid-thought.
+      if (!loaded || (!held && !watchable(events))) { loaded = true; await replay(next, events); return; }
+      // Reads mark events seen, so each fetch only carries what is new: keep adding to the held batch.
+      held = held ? { ...next, since: [...(held.since ?? []), ...events] } : next;
+      showHeld();
     } catch { /* the socket will reconnect and try again */ }
+  }
+
+  /** The opponent's move is waiting to be watched. */
+  function showHeld() {
+    if (!held) { heldEl.remove(); return; }
+    const ev = (held.since ?? []) as any[];
+    const moved = new Set(ev.filter(e => e.t === 'move').map(e => e.shipId)).size;
+    const attacks = ev.filter(e => e.t === 'attack').length;
+    const lost = ev.filter(e => e.t === 'destroyed' || (e.t === 'removed' && e.reason === 'fled')).length;
+    const parts = [moved && `${moved} ship${moved > 1 ? 's' : ''} moved`, attacks && `${attacks} attack${attacks > 1 ? 's' : ''}`, lost && `${lost} ship${lost > 1 ? 's' : ''} lost`].filter(Boolean);
+    const them = held.seats[1 - held.you]?.name ?? 'Your opponent';
+    heldEl.replaceChildren(h('div', { class: 'panel heldpanel' },
+      h('h2', {}, `${them} made their move`),
+      h('p', { class: 'hint' }, parts.length ? parts.join(' · ') : 'The round moved on.'),
+      h('div', { class: 'rowgap' },
+        h('button', { class: 'primary', onclick: () => void watchHeld(false) }, 'Play it back'),
+        h('button', { onclick: () => void watchHeld(true) }, 'Skip to the result'))));
+    if (!heldEl.isConnected) root.append(heldEl);
+  }
+
+  async function watchHeld(skip: boolean) {
+    const t = held; if (!t) return;
+    held = null; heldEl.remove();
+    sfx.click();
+    if (skip) { turn = t; syncBoard(); render(); return; }
+    await replay(t, (t.since ?? []) as GameEvent[], true);
   }
 
   /** It just became your move and you may not be looking at this tab. */
@@ -169,12 +204,9 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     return start;
   }
 
-  async function replay(next: TurnView, events: GameEvent[]) {
-    // Movement is the obvious one, but an exchange of fire is worth watching too — the engagement
-    // resolves on the actions submission, with no movement in that batch at all.
-    const WATCH = new Set(['move', 'attackResult', 'destroyed', 'obstacle']);
-    const worthWatching = events.some(e => WATCH.has((e as any).t));
-    if (!worthWatching || document.hidden || !next.view) { turn = next; syncBoard(); render(); return; }
+  async function replay(next: TurnView, events: GameEvent[], asked = false) {
+    // Asked-for playback runs even if the tab is hidden, since the player just clicked to watch.
+    if (!watchable(events) || (document.hidden && !asked) || !next.view) { turn = next; syncBoard(); render(); return; }
 
     replaying = true; skipReplay = false;
     turn = next;
@@ -581,6 +613,13 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   listen();          // opens the socket, which fetches the current turn once connected
   void catchUp();    // ...and do not wait on the handshake to show something
 }
+
+/**
+ * Movement is the obvious thing worth watching, but an exchange of fire is too: the engagement
+ * resolves on the actions submission, with no movement in that batch at all.
+ */
+const WATCH = new Set(['move', 'attackResult', 'destroyed', 'obstacle']);
+const watchable = (events: GameEvent[]) => events.some(e => WATCH.has((e as any).t));
 
 /** One readable line for a game event, or null for the ones not worth reading. */
 function narrate(e: any, G: GameState | null): string | null {
