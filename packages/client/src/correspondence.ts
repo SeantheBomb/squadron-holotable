@@ -46,6 +46,8 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
   let replaying = false, skipReplay = false;
   // An opponent's move that arrived while the match was open, waiting for the player to watch it.
   let held: TurnView | null = null, loaded = false;
+  // How far into the match's event history this page has already played (absolute position).
+  let shownTo: number | null = null;
   const heldEl = h('div', { class: 'heldwrap' });
 
   const root = h('div', { class: 'game corr' });
@@ -117,10 +119,17 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     if (replaying) { pendingCatchUp = true; return; }
     const wasMine = !!turn?.yourTurn;
     try {
-      const next = await getTurn(code);
+      let next: TurnView = await getTurn(code);
       if (disposed) return;
       if (!wasMine && next.yourTurn) announce();
-      const events = (next.since ?? []) as GameEvent[];
+      // Only what this page has not already shown counts as new. Submitting plays your own turn
+      // through, but the server leaves those events unread, so the nudge that follows your own
+      // submission would otherwise offer them back to you as if your opponent had moved.
+      const all = (next.since ?? []) as GameEvent[];
+      const from = next.seenAt ?? 0;
+      const events = shownTo === null ? all : all.slice(Math.max(0, shownTo - from));
+      shownTo = from + all.length;
+      next = { ...next, since: events, seenAt: from + all.length - events.length };
       // Opening the match plays straight through. Once it is open, a move the opponent makes waits
       // behind a notice so it plays when you are ready to watch it, not while you are mid-thought.
       if (!loaded || (!held && !watchable(events))) { loaded = true; await replay(next, events); return; }
@@ -460,6 +469,7 @@ export function showCorrespondence(scene: GameScene, ui: HTMLElement, code: stri
     else packet.choices = choices;
     try {
       const next = await postTurn(code, { packet });
+      if (next.seenAt !== undefined) shownTo = next.seenAt + (next.since?.length ?? 0);
       deploy = {}; dials = {}; choices = []; selected = null; markAt = null;
       sfx.confirm();
       busy = false;
